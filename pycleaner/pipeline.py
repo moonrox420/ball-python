@@ -1,0 +1,349 @@
+"""
+Cleanup pipeline coordinating syntax healing, import resolution, linting, and formatting.
+"""
+
+from __future__ import annotations
+
+import ast
+import difflib
+import shutil
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from pycleaner.import_resolver import ImportResolver
+from pycleaner.linter_formatter import LinterFormatter
+from pycleaner.syntax_healer import SyntaxHealer
+
+if TYPE_CHECKING:
+    from pycleaner.config import PyCleanerConfig
+
+
+@dataclass(slots=True)
+class CleanResult:
+    """Detailed result of cleaning a single Python file."""
+
+    path: Path
+    original_code: str
+    cleaned_code: str
+    changed: bool
+    is_valid_python: bool
+    syntax_repairs: list[str] = field(default_factory=list)
+    resolved_imports: list[str] = field(default_factory=list)
+    unresolved_symbols: list[str] = field(default_factory=list)
+    lint_changed: bool = False
+    format_changed: bool = False
+    error: str | None = None
+    diagnostics: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def diff(self) -> str:
+        """Produce unified diff string comparing original and cleaned code."""
+        if not self.changed:
+            return ""
+        orig_lines = self.original_code.splitlines(keepends=True)
+        clean_lines = self.cleaned_code.splitlines(keepends=True)
+        filename = str(self.path)
+        diff_lines = difflib.unified_diff(
+            orig_lines,
+            clean_lines,
+            fromfile=f"a/{filename}",
+            tofile=f"b/{filename}",
+        )
+        return "".join(diff_lines)
+
+
+@dataclass(slots=True)
+class PipelineOptions:
+    """Configurable feature flags and mappings for CleanPipeline."""
+
+    enable_syntax_healing: bool = True
+    enable_import_resolution: bool = True
+    enable_lint_fixing: bool = True
+    enable_formatting: bool = True
+    custom_import_map: dict[str, str] | None = None
+
+
+class CleanPipeline:
+    """Orchestrates all static cleanup passes for Python source files."""
+
+    def __init__(
+        self,
+        options: PipelineOptions | None = None,
+        config: PyCleanerConfig | Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        opts = options or PipelineOptions(
+            enable_syntax_healing=kwargs.get("enable_syntax_healing", True),
+            enable_import_resolution=kwargs.get("enable_import_resolution", True),
+            enable_lint_fixing=kwargs.get("enable_lint_fixing", True),
+            enable_formatting=kwargs.get("enable_formatting", True),
+            custom_import_map=kwargs.get("custom_import_map"),
+        )
+        self.enable_syntax_healing = opts.enable_syntax_healing
+        self.enable_import_resolution = opts.enable_import_resolution
+        self.enable_lint_fixing = opts.enable_lint_fixing
+        self.enable_formatting = opts.enable_formatting
+        self.config = config
+
+        import_map = dict(opts.custom_import_map or {})
+        custom_map = getattr(config, "custom_import_map", None)
+        if custom_map:
+            import_map.update(custom_map)
+
+        self.syntax_healer = SyntaxHealer()
+        self.import_resolver = ImportResolver(custom_import_map=import_map)
+        self.linter_formatter = LinterFormatter()
+
+    def _stage_heal(
+        self, current_code: str, filename: str, syntax_repairs: list[str]
+    ) -> tuple[str, str | None]:
+        """Execute Stage 1: Syntax Healing."""
+        if not self.enable_syntax_healing:
+            return current_code, None
+
+        heal_res = self.syntax_healer.heal(current_code, filename=filename)
+        if heal_res.repairs:
+            syntax_repairs.extend(heal_res.repairs)
+            current_code = heal_res.code
+
+        if not heal_res.is_valid:
+            col_info = (
+                f":{heal_res.error_offset}" if heal_res.error_offset is not None else ""
+            )
+            return (
+                current_code,
+                f"SyntaxError at line {heal_res.error_lineno}{col_info}: {heal_res.error_message}",
+            )
+        return current_code, None
+
+    def _stage_resolve_imports(
+        self,
+        current_code: str,
+        filename: str,
+        resolved_imports: list[str],
+        unresolved_symbols: list[str],
+        diagnostics: list[dict[str, str]],
+    ) -> str:
+        """Execute Stage 2: Missing Import Resolution."""
+        if self.enable_import_resolution:
+            import_res = self.import_resolver.resolve(current_code, filename=filename)
+            if import_res.resolved_imports:
+                resolved_imports.extend(import_res.resolved_imports)
+                current_code = import_res.code
+            if import_res.unresolved_symbols:
+                unresolved_symbols.extend(import_res.unresolved_symbols)
+            for d in import_res.diagnostics:
+                diag_dict = d.to_dict()
+                diag_dict["file"] = filename
+                diagnostics.append(diag_dict)
+        else:
+            missing_syms = self.import_resolver.find_undefined(
+                current_code, filename=filename
+            )
+            if missing_syms:
+                unresolved_symbols.extend(missing_syms)
+        return current_code
+
+    def _stage_lint_format(
+        self, current_code: str, filename: str
+    ) -> tuple[str, bool, bool]:
+        """Execute Stage 3 & 4: Lint Auto-fixing and Formatting."""
+        if not (self.enable_lint_fixing or self.enable_formatting):
+            return current_code, False, False
+
+        lf_res = self.linter_formatter.fix_and_format(
+            current_code,
+            filename=filename,
+            do_lint_fix=self.enable_lint_fixing,
+            do_format=self.enable_formatting,
+        )
+        return lf_res.code, lf_res.lint_changed, lf_res.format_changed
+
+    @staticmethod
+    def _validate_syntax(
+        current_code: str, filename: str, error_msg: str | None
+    ) -> tuple[bool, str | None]:
+        try:
+            ast.parse(current_code, filename=filename)
+            return True, error_msg
+        except SyntaxError as err:
+            msg = error_msg or f"SyntaxError at line {err.lineno}: {err.msg}"
+            return False, msg
+
+    def process_source(self, source: str, filename: str = "<stdin>") -> CleanResult:
+        """Process in-memory Python source code through the pipeline."""
+        current_code = source
+        syntax_repairs: list[str] = []
+        resolved_imports: list[str] = []
+        unresolved_symbols: list[str] = []
+        lint_changed = False
+        format_changed = False
+        error_msg: str | None = None
+        diagnostics: list[dict[str, str]] = []
+
+        for _ in range(2):
+            prev_code = current_code
+            current_code, error_msg = self._stage_heal(
+                current_code, filename, syntax_repairs
+            )
+            if error_msg is not None:
+                break
+            current_code = self._stage_resolve_imports(
+                current_code,
+                filename,
+                resolved_imports,
+                unresolved_symbols,
+                diagnostics,
+            )
+            current_code, l_chg, f_chg = self._stage_lint_format(current_code, filename)
+            lint_changed = lint_changed or l_chg
+            format_changed = format_changed or f_chg
+            if current_code == prev_code:
+                break
+
+        is_valid, final_error = self._validate_syntax(current_code, filename, error_msg)
+        return CleanResult(
+            path=Path(filename),
+            original_code=source,
+            cleaned_code=current_code,
+            changed=current_code != source,
+            is_valid_python=is_valid,
+            syntax_repairs=syntax_repairs,
+            resolved_imports=resolved_imports,
+            unresolved_symbols=unresolved_symbols,
+            lint_changed=lint_changed,
+            format_changed=format_changed,
+            error=final_error,
+            diagnostics=diagnostics,
+        )
+
+    def process_file(
+        self,
+        filepath: Path | str,
+        apply_changes: bool = True,
+        backup: bool = False,
+    ) -> CleanResult:
+        """Process a single file on disk and optionally write back updates.
+
+        Args:
+            filepath: Path to the Python file to process.
+            apply_changes: If True, write cleaned code back to disk.
+            backup: If True, create a .pycleaner.bak file before overwriting.
+        """
+        path = Path(filepath).resolve()
+        content = path.read_text(encoding="utf-8", errors="replace")
+        result = self.process_source(content, filename=str(path))
+
+        if apply_changes and result.changed and result.is_valid_python:
+            if backup:
+                bak_path = path.with_name(path.name + ".pycleaner.bak")
+                shutil.copy2(path, bak_path)
+            path.write_text(result.cleaned_code, encoding="utf-8")
+
+        return result
+
+    def process_files(
+        self,
+        filepaths: list[Path],
+        apply_changes: bool = True,
+        backup: bool = False,
+        max_workers: int | None = None,
+    ) -> list[CleanResult]:
+        """Process multiple files, optionally in parallel.
+
+        Args:
+            filepaths: List of Python file paths.
+            apply_changes: Write cleaned code back to disk.
+            backup: Create .pycleaner.bak before overwriting.
+            max_workers: Max parallel workers. None = sequential. 1+ = parallel.
+        """
+        if max_workers is not None and max_workers > 1 and len(filepaths) > 1:
+            return self._process_parallel(filepaths, apply_changes, backup, max_workers)
+        return [
+            self.process_file(fp, apply_changes=apply_changes, backup=backup)
+            for fp in filepaths
+        ]
+
+    @staticmethod
+    def _collect_future_result(future: Any, fpath: Path) -> CleanResult:
+        if future.cancelled():
+            return CleanResult(
+                path=fpath,
+                original_code="",
+                cleaned_code="",
+                changed=False,
+                is_valid_python=False,
+                error="Processing error: Task was cancelled",
+            )
+        exc = future.exception()
+        if exc is not None:
+            return CleanResult(
+                path=fpath,
+                original_code="",
+                cleaned_code="",
+                changed=False,
+                is_valid_python=False,
+                error=f"Processing error: {exc}",
+            )
+        return future.result()
+
+    def _process_parallel(
+        self,
+        filepaths: list[Path],
+        apply_changes: bool,
+        backup: bool,
+        max_workers: int,
+    ) -> list[CleanResult]:
+        """Process files in parallel using ProcessPoolExecutor."""
+        results: dict[Path, CleanResult] = {}
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_to_path = {
+                executor.submit(
+                    _process_file_standalone,
+                    _StandaloneWorkerTask(
+                        filepath=fp,
+                        apply_changes=apply_changes,
+                        backup=backup,
+                        enable_syntax=self.enable_syntax_healing,
+                        enable_imports=self.enable_import_resolution,
+                        enable_lint=self.enable_lint_fixing,
+                        enable_format=self.enable_formatting,
+                        custom_import_map=self.import_resolver.custom_import_map,
+                    ),
+                ): fp
+                for fp in filepaths
+            }
+            for future in as_completed(future_to_path):
+                fpath = future_to_path[future]
+                results[fpath] = self._collect_future_result(future, fpath)
+        return [results[fp] for fp in filepaths]
+
+
+@dataclass(slots=True)
+class _StandaloneWorkerTask:
+    """Encapsulates arguments for parallel worker tasks."""
+
+    filepath: Path
+    apply_changes: bool
+    backup: bool
+    enable_syntax: bool
+    enable_imports: bool
+    enable_lint: bool
+    enable_format: bool
+    custom_import_map: dict[str, str] | None = None
+
+
+def _process_file_standalone(task: _StandaloneWorkerTask) -> CleanResult:
+    """Standalone function for ProcessPoolExecutor (must be module-level and picklable)."""
+    pipeline = CleanPipeline(
+        enable_syntax_healing=task.enable_syntax,
+        enable_import_resolution=task.enable_imports,
+        enable_lint_fixing=task.enable_lint,
+        enable_formatting=task.enable_format,
+        custom_import_map=task.custom_import_map,
+    )
+    return pipeline.process_file(
+        task.filepath, apply_changes=task.apply_changes, backup=task.backup
+    )

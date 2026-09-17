@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ballpython"
+version = "2.0.0"
+description = "The Ultimate Static Python Intelligence, Healing, Type Verification, and Security Suite"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Developer" }
+]
+dependencies = [
+    "ruff>=0.1.0",
+    "rich>=13.0.0",
+    "tomli>=1.1.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "black>=24.0.0",
+    "isort>=5.13.0",
+]
+security = [
+    "cryptography>=41.0.0",
+    "defusedxml>=0.7.1",
+]
+
+[project.scripts]
+ballpython = "pycleaner.cli:main"
+pycleaner = "pycleaner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ballpython*", "pycleaner*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-p no:pytestqt --basetemp=.pytest_temp"
+
+[tool.pycleaner]
+exclude = ["migrations/", "generated/", "*_pb2.py", "*_pb2_grpc.py"]
+include = []
+fix-py2-syntax = true
+fix-conditional-assignments = true
+custom-import-map = {}
+auto-add-future-annotations = false
+line-length = 88
+select-rules = "F401,F841,I,UP,E,W"
+ignore-decorators = ["@app.route", "@pytest.fixture", "@override"]
+ignore-names = ["_*", "test_*"]
+security-severity-threshold = "LOW"
+ignore-security-rules = []
+max-cyclomatic-complexity = 10
+max-cognitive-complexity = 15
+max-function-length = 50
+max-arguments = 5
+backup = true
+parallel = false
+max-workers = 4
