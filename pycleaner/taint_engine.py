@@ -9,6 +9,8 @@ SQL Injection, Path Traversal, SSRF, Deserialization).
 
 from __future__ import annotations
 
+from pycleaner.discovery import collect_project_python_files
+
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -265,14 +267,7 @@ class TaintEngine:
         if path.is_file():
             files = [path] if path.suffix == ".py" else []
         elif path.is_dir():
-            files = sorted(
-                f
-                for f in path.rglob("*.py")
-                if not any(
-                    part.startswith((".", "build", "dist", "venv", "__pycache__"))
-                    for part in f.parts
-                )
-            )
+            files = collect_project_python_files(path)
         else:
             return TaintReport()
 

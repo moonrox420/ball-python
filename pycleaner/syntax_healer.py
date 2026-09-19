@@ -26,6 +26,7 @@ class SyntaxHealResult:
     error_message: str | None = None
     error_lineno: int | None = None
     error_offset: int | None = None
+    diagnostic: str | None = None
 
 
 class SyntaxHealer:
@@ -183,6 +184,12 @@ class SyntaxHealer:
         ):
             return code, repairs
 
+        if apply_step(
+            self._fix_unindented_blocks,
+            "Re-indented {count} under-indented block(s) following compound statement headers",
+        ):
+            return code, repairs
+
         code, d_repairs = self._fix_unbalanced_delimiters(code, filename=filename)
         repairs.extend(d_repairs)
         return code, repairs
@@ -199,6 +206,7 @@ class SyntaxHealer:
             return SyntaxHealResult(code=repaired, is_valid=True, repairs=repairs)
 
         err_msg, lineno, offset = final_error
+        diag = self.format_diagnostic(source, filename=filename, error=final_error)
         return SyntaxHealResult(
             code=source,
             is_valid=False,
@@ -206,7 +214,124 @@ class SyntaxHealer:
             error_message=err_msg,
             error_lineno=lineno,
             error_offset=offset,
+            diagnostic=diag,
         )
+
+
+    def _fix_unindented_blocks(self, source: str) -> tuple[str, int]:
+        """
+        Auto-heal under-indented blocks following compound statement headers.
+        Repairs situations where docstrings or body statements were not indented
+        relative to def, class, if, while, for, with, try, except, etc.
+        """
+        lines = source.splitlines()
+        repaired_count = 0
+        max_passes = 10
+
+        for _ in range(max_passes):
+            try:
+                ast.parse("\n".join(lines))
+                break
+            except IndentationError as err:
+                msg = err.msg or ""
+                if "expected an indented block" not in msg:
+                    break
+
+                header_idx = None
+                m = re.search(r"on line (\d+)", msg)
+                if m:
+                    header_idx = int(m.group(1)) - 1
+                else:
+                    target_idx = (err.lineno or 2) - 1
+                    for i in range(target_idx - 1, -1, -1):
+                        stripped = lines[i].strip()
+                        if stripped and not stripped.startswith("#"):
+                            header_idx = i
+                            break
+
+                if header_idx is None or header_idx < 0 or header_idx >= len(lines):
+                    break
+
+                header_line = lines[header_idx]
+                header_indent = len(header_line) - len(header_line.lstrip())
+                desired_indent = header_indent + 4
+                start_idx = header_idx + 1
+
+                i = start_idx
+                in_multiline_str = False
+                multiline_quote = ""
+
+                while i < len(lines):
+                    line = lines[i]
+                    stripped = line.strip()
+
+                    if not stripped:
+                        i += 1
+                        continue
+
+                    curr_indent = len(line) - len(line.lstrip())
+
+                    was_in_multiline = in_multiline_str
+                    if in_multiline_str:
+                        if multiline_quote in stripped:
+                            in_multiline_str = False
+                    else:
+                        if stripped.startswith(('"""', chr(39) * 3)):
+                            quote = stripped[:3]
+                            if stripped.count(quote) % 2 == 1:
+                                in_multiline_str = True
+                                multiline_quote = quote
+
+                    is_sibling_declaration = (
+                        curr_indent <= header_indent
+                        and stripped.startswith(("def ", "class ", "async def ", "@"))
+                    )
+                    is_outer_scope = (
+                        header_indent > 0
+                        and curr_indent == 0
+                        and not was_in_multiline
+                        and not stripped.startswith(('"""', chr(39) * 3))
+                    )
+
+                    if not was_in_multiline and not in_multiline_str and (is_sibling_declaration or is_outer_scope):
+                        break
+
+                    if curr_indent < desired_indent:
+                        shift = desired_indent - curr_indent
+                        lines[i] = (" " * shift) + line
+                    i += 1
+
+                repaired_count += 1
+            except SyntaxError:
+                break
+
+        return "\n".join(lines), repaired_count
+
+    def format_diagnostic(
+        self,
+        source: str,
+        filename: str = "<unknown>",
+        error: tuple[str, int, int] | None = None,
+    ) -> str:
+        """Format an unhealed syntax error into a rich, compiler-grade diagnostic banner."""
+        err = error or self._check_syntax(source, filename)
+        if err is None:
+            return ""
+        msg, lineno, offset = err
+        lines = source.splitlines()
+        line_idx = max(0, min(lineno - 1, len(lines) - 1)) if lines else 0
+        error_line = lines[line_idx] if lines else ""
+        pointer_indent = " " * max(0, offset - 1)
+
+        diagnostic_lines = [
+            f"❌ SyntaxError in {filename}:{lineno}:{offset}",
+            f"   --> {filename}:{lineno}:{offset}",
+            "    |",
+            f"{lineno:3d} | {error_line}",
+            f"    | {pointer_indent}^",
+            f"    = Error: {msg}",
+        ]
+        return "\n".join(diagnostic_lines)
 
     def _check_syntax(self, code: str, filename: str) -> tuple[str, int, int] | None:
         """Parse source code into AST. Returns None on success, or (msg, lineno, offset) on error."""

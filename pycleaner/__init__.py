@@ -10,6 +10,14 @@ dataflow taint vulnerabilities, and synthesizes automated behavioral test suites
 
 from __future__ import annotations
 
+from pycleaner.discovery import (
+    DEFAULT_IGNORED_DIRS,
+    PROTECTED_FILE_PATTERNS,
+    collect_project_python_files,
+    is_ignored_directory,
+    is_protected_file,
+)
+
 __version__ = "2.0.0"
 __all__ = [
     "CleanPipeline",
@@ -17,7 +25,11 @@ __all__ = [
     "ComplexityAnalyzer",
     "ComplexityReport",
     "DeadCodeDetector",
+    "DeadCodeFixResult",
+    "DeadCodeFixer",
     "DeadCodeReport",
+    "ModernizeResult",
+    "Modernizer",
     "DependencyAuditor",
     "GeneratedTestSuite",
     "ImportResolver",
@@ -40,7 +52,8 @@ __all__ = [
 
 from pycleaner.complexity_analyzer import ComplexityAnalyzer, ComplexityReport
 from pycleaner.config import PyCleanerConfig, load_config
-from pycleaner.dead_code_detector import DeadCodeDetector, DeadCodeReport
+from pycleaner.dead_code_detector import DeadCodeDetector, DeadCodeFixResult, DeadCodeFixer, DeadCodeReport
+from pycleaner.modernizer import ModernizeResult, Modernizer
 from pycleaner.dependency_auditor import DependencyAuditor
 from pycleaner.import_resolver import ImportResolver
 from pycleaner.linter_formatter import LinterFormatter

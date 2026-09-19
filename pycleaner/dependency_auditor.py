@@ -12,10 +12,13 @@ import ast
 import importlib.metadata
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
+
+from pycleaner.discovery import collect_project_python_files, is_protected_file
 
 
 @dataclass(slots=True)
@@ -57,6 +60,21 @@ class DependencyAuditor:
         "OpenGL": "PyOpenGL",
         "attr": "attrs",
         "google": "protobuf",
+        # High-frequency PyPI packages
+        "nmap": "python-nmap",
+        "dns": "dnspython",
+        "telegram": "python-telegram-bot",
+        "discord": "discord.py",
+        "pkg_resources": "setuptools",
+        "setuptools": "setuptools",
+        "pydantic_core": "pydantic-core",
+        "multipart": "python-multipart",
+        "kafka": "kafka-python",
+        "smart_open": "smart-open",
+        "MySQLdb": "mysqlclient",
+        "psycopg2": "psycopg2-binary",
+        "redis": "redis",
+        "playwright": "playwright",
     }
 
     def __init__(self, root_dir: str | Path) -> None:
@@ -79,78 +97,90 @@ class DependencyAuditor:
             "pylint",
             "build",
             "twine",
-            "pip",
             "wheel",
             "setuptools",
+            "pip",
+            "pre-commit",
+            "coverage",
+            "pytest-cov",
+            "tox",
+            "nox",
         }
     )
 
     @staticmethod
     def canonicalize_name(name: str) -> str:
-        """Canonicalize package name per PEP 503 (lowercase, dashes instead of underscores)."""
+        """Normalize package name per PEP 503."""
         return re.sub(r"[-_.]+", "-", name).lower()
 
-    @staticmethod
-    def _extract_imports_from_file(filepath: Path) -> set[str]:
-        """Extract root imported module names from a single Python file."""
-        modules: set[str] = set()
+    def _extract_imports_from_file(self, file_path: Path) -> set[str]:
+        imports: set[str] = set()
         try:
-            content = filepath.read_text(encoding="utf-8", errors="replace")
-            tree = ast.parse(content, filename=str(filepath))
-        except SyntaxError:
-            return modules
+            tree = ast.parse(file_path.read_text(encoding="utf-8", errors="ignore"))
+        except (SyntaxError, UnicodeDecodeError):
+            return imports
 
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    modules.add(alias.name.split(".")[0])
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                modules.add(node.module.split(".")[0])
-        return modules
+                    root_pkg = alias.name.split(".")[0]
+                    imports.add(root_pkg)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    root_pkg = node.module.split(".")[0]
+                    imports.add(root_pkg)
+        return imports
 
     def scan_codebase_imports(self) -> set[str]:
-        """Traverse the project directory and extract all imported root module names."""
-        ignore_dirs = {
-            ".git",
-            ".venv",
-            "venv",
-            "env",
-            "__pycache__",
-            "build",
-            "dist",
-            ".tox",
-            ".mypy_cache",
-            ".pytest_cache",
-            ".ruff_cache",
-            "site-packages",
-        }
+        """Scan all discovered Python files across the project for imported modules."""
         imported_modules: set[str] = set()
-        for current_root, dirs, files in os.walk(self.root_dir):
-            dirs[:] = [
-                d for d in dirs if d not in ignore_dirs and not d.startswith(".")
-            ]
-            for filename in files:
-                if filename.endswith(".py"):
-                    imported_modules.update(
-                        self._extract_imports_from_file(Path(current_root) / filename)
-                    )
+        for py_file in collect_project_python_files(self.root_dir):
+            imported_modules.update(self._extract_imports_from_file(py_file))
         return imported_modules
 
     def identify_local_modules(self) -> set[str]:
         """Identify local modules and packages belonging to the current project."""
         local_mods: set[str] = set()
-        search_dirs = [self.root_dir]
 
+        # 1. Project root folder itself is a primary local package / namespace candidate
+        local_mods.add(self.root_dir.name)
+        local_mods.add(self.root_dir.stem)
+
+        # 2. Extract package name from pyproject.toml if present
+        pyproject_file = self.root_dir / "pyproject.toml"
+        if pyproject_file.is_file():
+            try:
+                import tomllib
+            except ImportError:
+                import tomli as tomllib  # type: ignore
+            try:
+                data = tomllib.loads(pyproject_file.read_text(encoding="utf-8", errors="ignore"))
+                proj_name = data.get("project", {}).get("name") or data.get("tool", {}).get("poetry", {}).get("name")
+                if proj_name:
+                    local_mods.add(str(proj_name))
+                    local_mods.add(str(proj_name).replace("-", "_"))
+            except Exception:
+                pass
+
+        # 3. Discover local .py files and subpackages (including PEP 420 namespace packages)
+        search_dirs = [self.root_dir]
         src_dir = self.root_dir / "src"
         if src_dir.is_dir():
             search_dirs.append(src_dir)
 
         for sdir in search_dirs:
-            for item in sdir.iterdir():
-                if item.is_file() and item.suffix == ".py":
-                    local_mods.add(item.stem)
-                elif item.is_dir() and (item / "__init__.py").exists():
-                    local_mods.add(item.name)
+            try:
+                for item in sdir.iterdir():
+                    if item.is_file() and item.suffix == ".py":
+                        local_mods.add(item.stem)
+                    elif item.is_dir() and not item.name.startswith((".", "__")):
+                        # Standard package or PEP 420 namespace package with python files inside
+                        if (item / "__init__.py").exists() or any(
+                            sub.suffix == ".py" for sub in item.iterdir() if sub.is_file()
+                        ):
+                            local_mods.add(item.name)
+            except OSError:
+                continue
 
         return local_mods
 
@@ -171,11 +201,11 @@ class DependencyAuditor:
         if not req_file.exists():
             return declared
 
-        for line in req_file.read_text(encoding="utf-8").splitlines():
+        for line in req_file.read_text(encoding="utf-8", errors="ignore").splitlines():
             line = line.strip()
             if not line or line.startswith(("#", "-")):
                 continue
-            pkg_match = re.match(r"^([a-zA-Z0-9_\-\.]+)", line)
+            pkg_match = re.match(r"^([a-zA-Z0-9_.-]+)", line)
             if pkg_match:
                 pkg_name = pkg_match.group(1)
                 canon = self.canonicalize_name(pkg_name)
@@ -194,16 +224,15 @@ class DependencyAuditor:
             import tomli as tomllib  # type: ignore
 
         try:
-            data = tomllib.loads(pyproject_file.read_text(encoding="utf-8"))
+            data = tomllib.loads(pyproject_file.read_text(encoding="utf-8", errors="ignore"))
             project_deps = data.get("project", {}).get("dependencies", [])
             for dep in project_deps:
-                pkg_match = re.match(r"^([a-zA-Z0-9_\-\.]+)", dep.strip())
+                pkg_match = re.match(r"^([a-zA-Z0-9_.-]+)", dep.strip())
                 if pkg_match:
                     pkg_name = pkg_match.group(1)
                     canon = self.canonicalize_name(pkg_name)
                     declared[canon] = dep
-        except tomllib.TOMLDecodeError:
-            # Fall back to requirements.txt if pyproject.toml is malformed
+        except Exception:
             pass
         return declared
 
@@ -252,7 +281,7 @@ class DependencyAuditor:
                 f"Unused dependencies (declared but not imported): {', '.join(sorted(unused))}"
             )
         if fixed:
-            details.append("Updated requirements.txt successfully")
+            details.append("Updated requirements.txt successfully (backup saved as requirements.txt.bak)")
         return details
 
     def audit(
@@ -297,16 +326,29 @@ class DependencyAuditor:
     def _update_requirements(
         self, missing: set[str], unused_to_remove: set[str]
     ) -> bool:
-        """Append missing dependencies and remove unused ones in requirements.txt."""
+        """Append missing dependencies and remove unused ones in requirements.txt with safety checks."""
         req_file = self.root_dir / "requirements.txt"
         existing_lines: list[str] = []
         if req_file.exists():
-            existing_lines = req_file.read_text(encoding="utf-8").splitlines()
+            # Create a backup before making any changes
+            backup_file = req_file.with_suffix(".txt.bak")
+            try:
+                shutil.copy2(req_file, backup_file)
+            except OSError:
+                pass
+            existing_lines = req_file.read_text(encoding="utf-8", errors="ignore").splitlines()
 
         remove_canons = {
             self.canonicalize_name(m.group(1))
             for u in unused_to_remove
-            if (m := re.match(r"^([a-zA-Z0-9_\-\.]+)", u))
+            if (m := re.match(r"^([a-zA-Z0-9_.-]+)", u))
+        }
+
+        # Filter out any local module from being appended to requirements.txt
+        local_canons = {self.canonicalize_name(m) for m in self.identify_local_modules()}
+        safe_missing = {
+            pkg for pkg in missing
+            if self.canonicalize_name(pkg) not in local_canons
         }
 
         new_lines: list[str] = []
@@ -316,7 +358,7 @@ class DependencyAuditor:
                 new_lines.append(line)
                 continue
 
-            pkg_match = re.match(r"^([a-zA-Z0-9_\-\.]+)", stripped)
+            pkg_match = re.match(r"^([a-zA-Z0-9_.-]+)", stripped)
             if pkg_match:
                 pkg_name = pkg_match.group(1)
                 canon = self.canonicalize_name(pkg_name)
@@ -325,7 +367,7 @@ class DependencyAuditor:
             new_lines.append(line)
 
         # Append missing packages
-        new_lines.extend(sorted(missing))
+        new_lines.extend(sorted(safe_missing))
 
         req_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
         return True

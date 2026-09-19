@@ -8,6 +8,8 @@ and maximum nesting depth.
 
 from __future__ import annotations
 
+from pycleaner.discovery import collect_project_python_files
+
 import ast
 import os
 from dataclasses import dataclass, field
@@ -375,15 +377,14 @@ class ComplexityAnalyzer:
         all_functions: list[ComplexityMetrics] = []
         files_scanned = 0
 
-        for current_root, dirs, filenames in os.walk(root):
-            dirs[:] = [
-                d for d in dirs if d not in self.IGNORE_DIRS and not d.startswith(".")
-            ]
-            for fname in filenames:
-                file_funcs = self._collect_file_metrics(current_root, fname)
-                if file_funcs is not None:
-                    all_functions.extend(file_funcs)
-                    files_scanned += 1
+        for fpath in collect_project_python_files(root):
+            try:
+                content = fpath.read_text(encoding="utf-8", errors="replace")
+                metrics = self.analyze_source(content, filename=str(fpath)).functions
+                all_functions.extend(metrics)
+                files_scanned += 1
+            except OSError:
+                continue
 
         all_functions.sort(key=lambda f: f.cyclomatic, reverse=True)
         return ComplexityReport(functions=all_functions, files_scanned=files_scanned)

@@ -7,6 +7,8 @@ unreachable code after return/raise/break/continue, and empty pass branches.
 
 from __future__ import annotations
 
+from pycleaner.discovery import collect_project_python_files
+
 import ast
 import os
 from dataclasses import dataclass, field
@@ -503,13 +505,183 @@ class DeadCodeDetector:
         return self._matches_ignore_pattern(name)
 
     def _discover_files(self, root: Path) -> list[Path]:
-        """Walk the project tree and collect .py files, respecting ignore dirs."""
-        files: list[Path] = []
-        for current_root, dirs, filenames in os.walk(root):
-            dirs[:] = [
-                d for d in dirs if d not in self.IGNORE_DIRS and not d.startswith(".")
-            ]
-            for fname in filenames:
-                if fname.endswith(".py"):
-                    files.append(Path(current_root) / fname)
-        return sorted(files)
+        """Walk the project tree and collect .py files, respecting ignore dirs and gitignore."""
+        return collect_project_python_files(root)
+    def fix_source(self, source: str, filename: str = "<stdin>") -> DeadCodeFixResult:
+        """Surgically fix dead code in in-memory source."""
+        fixer = DeadCodeFixer()
+        return fixer.fix(source, filename=filename)
+
+    def fix_file(self, filepath: Path | str, apply_changes: bool = True) -> DeadCodeFixResult:
+        """Surgically fix dead code in a file."""
+        path = Path(filepath).resolve()
+        content = path.read_text(encoding="utf-8", errors="replace")
+        res = self.fix_source(content, filename=str(path))
+        if apply_changes and res.changed:
+            path.write_text(res.code, encoding="utf-8")
+        return res
+
+    def fix_project(self, root_dir: Path | str) -> dict[Path, DeadCodeFixResult]:
+        """Surgically fix dead code across all project Python files."""
+        root = Path(root_dir).resolve()
+        py_files = self._discover_files(root)
+        results: dict[Path, DeadCodeFixResult] = {}
+        for pf in py_files:
+            res = self.fix_file(pf, apply_changes=True)
+            if res.changed:
+                results[pf] = res
+        return results
+
+
+
+@dataclass(slots=True)
+class DeadCodeFixResult:
+    """Outcome of attempting to fix dead code in source code."""
+
+    code: str
+    changed: bool
+    pruned_items: list[str] = field(default_factory=list)
+
+
+class _DeadCodePrunerCollector(ast.NodeVisitor):
+    """Collects line spans of unreachable code, redundant pass, and dead branches."""
+
+    def __init__(self) -> None:
+        self.deletions: list[tuple[int, int, str]] = []
+
+    def _is_terminal_jump(self, stmt: ast.AST) -> bool:
+        if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
+            return True
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            func = stmt.value.func
+            if isinstance(func, ast.Name) and func.id in ("exit", "quit"):
+                return True
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "sys"
+                and func.attr == "exit"
+            ):
+                return True
+        return False
+
+    def _inspect_stmts(self, stmts: list[ast.stmt]) -> None:
+        terminal_seen = False
+        unreachable: list[ast.stmt] = []
+        non_doc = [
+            s
+            for s in stmts
+            if not (
+                isinstance(s, ast.Expr)
+                and isinstance(s.value, ast.Constant)
+                and isinstance(s.value.value, str)
+            )
+        ]
+
+        for stmt in stmts:
+            if terminal_seen:
+                unreachable.append(stmt)
+            elif self._is_terminal_jump(stmt):
+                terminal_seen = True
+            elif isinstance(stmt, ast.Pass) and len(non_doc) > 1:
+                self.deletions.append(
+                    (stmt.lineno, getattr(stmt, "end_lineno", stmt.lineno), f"Pruned redundant 'pass' at line {stmt.lineno}")
+                )
+            elif (
+                isinstance(stmt, ast.If)
+                and isinstance(stmt.test, ast.Constant)
+                and stmt.test.value in (False, 0)
+                and not stmt.orelse
+            ):
+                self.deletions.append(
+                    (stmt.lineno, getattr(stmt, "end_lineno", stmt.lineno), f"Pruned dead 'if False' branch at line {stmt.lineno}")
+                )
+            self.visit(stmt)
+
+        if unreachable:
+            start_line = unreachable[0].lineno
+            end_line = getattr(unreachable[-1], "end_lineno", unreachable[-1].lineno)
+            self.deletions.append(
+                (start_line, end_line, f"Pruned {len(unreachable)} unreachable statement(s) at lines {start_line}-{end_line}")
+            )
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self._inspect_stmts(node.body)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._inspect_stmts(node.body)
+
+    def visit_If(self, node: ast.If) -> None:
+        self._inspect_stmts(node.body)
+        if node.orelse:
+            self._inspect_stmts(node.orelse)
+
+    def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
+        self._inspect_stmts(node.body)
+        if node.orelse:
+            self._inspect_stmts(node.orelse)
+
+    visit_AsyncFor = visit_For
+
+    def visit_While(self, node: ast.While) -> None:
+        self._inspect_stmts(node.body)
+        if node.orelse:
+            self._inspect_stmts(node.orelse)
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self._inspect_stmts(node.body)
+        for h in node.handlers:
+            self._inspect_stmts(h.body)
+        if node.orelse:
+            self._inspect_stmts(node.orelse)
+        if node.finalbody:
+            self._inspect_stmts(node.finalbody)
+
+    def visit_With(self, node: ast.With | ast.AsyncWith) -> None:
+        self._inspect_stmts(node.body)
+
+    visit_AsyncWith = visit_With
+
+    def visit_Match(self, node: ast.AST) -> None:
+        for case in getattr(node, "cases", []):
+            self._inspect_stmts(case.body)
+
+
+class DeadCodeFixer:
+    """Surgically eliminates unreachable statements, dead branches, and redundant pass statements."""
+
+    def fix(self, source: str, filename: str = "<stdin>") -> DeadCodeFixResult:
+        current_code = source
+        all_pruned: list[str] = []
+
+        for _ in range(2):
+            try:
+                tree = ast.parse(current_code, filename=filename)
+            except SyntaxError:
+                break
+
+            collector = _DeadCodePrunerCollector()
+            collector.visit(tree)
+            if not collector.deletions:
+                break
+
+            lines = current_code.splitlines(keepends=True)
+            sorted_deletions = sorted(collector.deletions, key=lambda x: x[0], reverse=True)
+            for start_line, end_line, desc in sorted_deletions:
+                del lines[start_line - 1 : end_line]
+                all_pruned.append(desc)
+
+            candidate = "".join(lines)
+            try:
+                ast.parse(candidate, filename=filename)
+                current_code = candidate
+            except SyntaxError:
+                break
+
+        return DeadCodeFixResult(
+            code=current_code,
+            changed=current_code != source,
+            pruned_items=all_pruned,
+        )

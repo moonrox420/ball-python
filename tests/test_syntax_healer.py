@@ -160,5 +160,31 @@ class TestSyntaxHealer(unittest.TestCase):
         self.assertEqual(res.code, code)
 
 
+    def test_unindented_block_after_function_definition(self) -> None:
+        raw_code = (
+            "class Bot:\n"
+            "    def plugin_add(self, name: str, path: str):\n"
+            '    """\n'
+            "Load a local plugin from an explicitly supplied Python file.\n"
+            '"""\n'
+            "    safe_name = name\n"
+            "\n"
+            "    def next_func(self):\n"
+            "        pass\n"
+        )
+        res = self.healer.heal(raw_code)
+        self.assertTrue(res.is_valid)
+        self.assertTrue(any("under-indented block" in r for r in res.repairs))
+        self.assertIn("        safe_name = name", res.code)
+
+    def test_compiler_grade_diagnostic_formatting(self) -> None:
+        broken_code = "def foo(x)\n    return x +\n"
+        res = self.healer.heal(broken_code, filename="example.py")
+        self.assertFalse(res.is_valid)
+        self.assertIsNotNone(res.diagnostic)
+        self.assertIn("SyntaxError in example.py", res.diagnostic)
+        self.assertIn("^", res.diagnostic)
+
+
 if __name__ == "__main__":
     unittest.main()

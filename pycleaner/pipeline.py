@@ -1,5 +1,6 @@
 """
-Cleanup pipeline coordinating syntax healing, import resolution, linting, and formatting.
+Cleanup pipeline coordinating syntax healing, code modernization, dead-code pruning,
+import resolution, linting, and formatting.
 """
 
 from __future__ import annotations
@@ -12,8 +13,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pycleaner.dead_code_detector import DeadCodeFixer
 from pycleaner.import_resolver import ImportResolver
 from pycleaner.linter_formatter import LinterFormatter
+from pycleaner.modernizer import Modernizer
 from pycleaner.syntax_healer import SyntaxHealer
 
 if TYPE_CHECKING:
@@ -30,6 +33,8 @@ class CleanResult:
     changed: bool
     is_valid_python: bool
     syntax_repairs: list[str] = field(default_factory=list)
+    modernize_transforms: list[str] = field(default_factory=list)
+    dead_code_pruned: list[str] = field(default_factory=list)
     resolved_imports: list[str] = field(default_factory=list)
     unresolved_symbols: list[str] = field(default_factory=list)
     lint_changed: bool = False
@@ -59,6 +64,8 @@ class PipelineOptions:
     """Configurable feature flags and mappings for CleanPipeline."""
 
     enable_syntax_healing: bool = True
+    enable_modernizer: bool = True
+    enable_dead_code_pruning: bool = True
     enable_import_resolution: bool = True
     enable_lint_fixing: bool = True
     enable_formatting: bool = True
@@ -76,12 +83,16 @@ class CleanPipeline:
     ) -> None:
         opts = options or PipelineOptions(
             enable_syntax_healing=kwargs.get("enable_syntax_healing", True),
+            enable_modernizer=kwargs.get("enable_modernizer", True),
+            enable_dead_code_pruning=kwargs.get("enable_dead_code_pruning", True),
             enable_import_resolution=kwargs.get("enable_import_resolution", True),
             enable_lint_fixing=kwargs.get("enable_lint_fixing", True),
             enable_formatting=kwargs.get("enable_formatting", True),
             custom_import_map=kwargs.get("custom_import_map"),
         )
         self.enable_syntax_healing = opts.enable_syntax_healing
+        self.enable_modernizer = opts.enable_modernizer
+        self.enable_dead_code_pruning = opts.enable_dead_code_pruning
         self.enable_import_resolution = opts.enable_import_resolution
         self.enable_lint_fixing = opts.enable_lint_fixing
         self.enable_formatting = opts.enable_formatting
@@ -93,6 +104,8 @@ class CleanPipeline:
             import_map.update(custom_map)
 
         self.syntax_healer = SyntaxHealer()
+        self.modernizer = Modernizer()
+        self.dead_code_fixer = DeadCodeFixer()
         self.import_resolver = ImportResolver(custom_import_map=import_map)
         self.linter_formatter = LinterFormatter()
 
@@ -118,6 +131,32 @@ class CleanPipeline:
             )
         return current_code, None
 
+    def _stage_modernize(
+        self, current_code: str, filename: str, modernize_transforms: list[str]
+    ) -> str:
+        """Execute Stage 2: Code Modernization."""
+        if not self.enable_modernizer:
+            return current_code
+
+        mod_res = self.modernizer.modernize(current_code, filename=filename)
+        if mod_res.changed:
+            modernize_transforms.extend(mod_res.transformations)
+            return mod_res.code
+        return current_code
+
+    def _stage_dead_code(
+        self, current_code: str, filename: str, dead_code_pruned: list[str]
+    ) -> str:
+        """Execute Stage 3: Dead Code Pruning."""
+        if not self.enable_dead_code_pruning:
+            return current_code
+
+        dc_res = self.dead_code_fixer.fix(current_code, filename=filename)
+        if dc_res.changed:
+            dead_code_pruned.extend(dc_res.pruned_items)
+            return dc_res.code
+        return current_code
+
     def _stage_resolve_imports(
         self,
         current_code: str,
@@ -126,7 +165,7 @@ class CleanPipeline:
         unresolved_symbols: list[str],
         diagnostics: list[dict[str, str]],
     ) -> str:
-        """Execute Stage 2: Missing Import Resolution."""
+        """Execute Stage 4: Missing Import Resolution."""
         if self.enable_import_resolution:
             import_res = self.import_resolver.resolve(current_code, filename=filename)
             if import_res.resolved_imports:
@@ -149,7 +188,7 @@ class CleanPipeline:
     def _stage_lint_format(
         self, current_code: str, filename: str
     ) -> tuple[str, bool, bool]:
-        """Execute Stage 3 & 4: Lint Auto-fixing and Formatting."""
+        """Execute Stage 5: Lint Auto-fixing and Formatting."""
         if not (self.enable_lint_fixing or self.enable_formatting):
             return current_code, False, False
 
@@ -176,6 +215,8 @@ class CleanPipeline:
         """Process in-memory Python source code through the pipeline."""
         current_code = source
         syntax_repairs: list[str] = []
+        modernize_transforms: list[str] = []
+        dead_code_pruned: list[str] = []
         resolved_imports: list[str] = []
         unresolved_symbols: list[str] = []
         lint_changed = False
@@ -190,6 +231,13 @@ class CleanPipeline:
             )
             if error_msg is not None:
                 break
+
+            current_code = self._stage_modernize(
+                current_code, filename, modernize_transforms
+            )
+            current_code = self._stage_dead_code(
+                current_code, filename, dead_code_pruned
+            )
             current_code = self._stage_resolve_imports(
                 current_code,
                 filename,
@@ -211,6 +259,8 @@ class CleanPipeline:
             changed=current_code != source,
             is_valid_python=is_valid,
             syntax_repairs=syntax_repairs,
+            modernize_transforms=modernize_transforms,
+            dead_code_pruned=dead_code_pruned,
             resolved_imports=resolved_imports,
             unresolved_symbols=unresolved_symbols,
             lint_changed=lint_changed,
@@ -225,13 +275,7 @@ class CleanPipeline:
         apply_changes: bool = True,
         backup: bool = False,
     ) -> CleanResult:
-        """Process a single file on disk and optionally write back updates.
-
-        Args:
-            filepath: Path to the Python file to process.
-            apply_changes: If True, write cleaned code back to disk.
-            backup: If True, create a .pycleaner.bak file before overwriting.
-        """
+        """Process a single file on disk and optionally write back updates."""
         path = Path(filepath).resolve()
         content = path.read_text(encoding="utf-8", errors="replace")
         result = self.process_source(content, filename=str(path))
@@ -251,14 +295,7 @@ class CleanPipeline:
         backup: bool = False,
         max_workers: int | None = None,
     ) -> list[CleanResult]:
-        """Process multiple files, optionally in parallel.
-
-        Args:
-            filepaths: List of Python file paths.
-            apply_changes: Write cleaned code back to disk.
-            backup: Create .pycleaner.bak before overwriting.
-            max_workers: Max parallel workers. None = sequential. 1+ = parallel.
-        """
+        """Process multiple files, optionally in parallel."""
         if max_workers is not None and max_workers > 1 and len(filepaths) > 1:
             return self._process_parallel(filepaths, apply_changes, backup, max_workers)
         return [
@@ -307,6 +344,8 @@ class CleanPipeline:
                         apply_changes=apply_changes,
                         backup=backup,
                         enable_syntax=self.enable_syntax_healing,
+                        enable_modernize=self.enable_modernizer,
+                        enable_dead_code=self.enable_dead_code_pruning,
                         enable_imports=self.enable_import_resolution,
                         enable_lint=self.enable_lint_fixing,
                         enable_format=self.enable_formatting,
@@ -329,6 +368,8 @@ class _StandaloneWorkerTask:
     apply_changes: bool
     backup: bool
     enable_syntax: bool
+    enable_modernize: bool
+    enable_dead_code: bool
     enable_imports: bool
     enable_lint: bool
     enable_format: bool
@@ -339,6 +380,8 @@ def _process_file_standalone(task: _StandaloneWorkerTask) -> CleanResult:
     """Standalone function for ProcessPoolExecutor (must be module-level and picklable)."""
     pipeline = CleanPipeline(
         enable_syntax_healing=task.enable_syntax,
+        enable_modernizer=task.enable_modernize,
+        enable_dead_code_pruning=task.enable_dead_code,
         enable_import_resolution=task.enable_imports,
         enable_lint_fixing=task.enable_lint,
         enable_formatting=task.enable_format,

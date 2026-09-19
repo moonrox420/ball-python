@@ -59,5 +59,47 @@ class TestDependencyAuditor(unittest.TestCase):
             self.assertNotIn("old-unused-pkg", updated_reqs)
 
 
+    def test_nmap_maps_to_python_nmap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            code_file = tmp_path / "scanner.py"
+            code_file.write_text("import nmap\n", encoding="utf-8")
+
+            req_file = tmp_path / "requirements.txt"
+            req_file.write_text("python-nmap\n", encoding="utf-8")
+
+            auditor = DependencyAuditor(tmp_path)
+            report = auditor.audit(fix=False)
+
+            self.assertNotIn("nmap", report.missing_packages)
+            self.assertNotIn("python-nmap", report.missing_packages)
+            self.assertEqual(len(report.unused_packages), 0)
+
+    def test_local_workspace_module_never_added_to_requirements(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            # Pretend the workspace root is named "cipher_snark"
+            proj_dir = tmp_path / "cipher_snark"
+            proj_dir.mkdir()
+
+            code_file = proj_dir / "main.py"
+            code_file.write_text(
+                "from cipher_snark.gui import App\n",
+                encoding="utf-8",
+            )
+            gui_file = proj_dir / "gui.py"
+            gui_file.write_text("class App: pass\n", encoding="utf-8")
+
+            req_file = proj_dir / "requirements.txt"
+            req_file.write_text("requests\n", encoding="utf-8")
+
+            auditor = DependencyAuditor(proj_dir)
+            report = auditor.audit(fix=True)
+
+            self.assertNotIn("cipher_snark", report.missing_packages)
+            updated_reqs = req_file.read_text(encoding="utf-8")
+            self.assertNotIn("cipher_snark", updated_reqs)
+
+
 if __name__ == "__main__":
     unittest.main()

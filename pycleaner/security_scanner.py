@@ -8,6 +8,8 @@ and assert statements used for input validation.
 
 from __future__ import annotations
 
+from pycleaner.discovery import collect_project_python_files
+
 import ast
 import os
 import re
@@ -480,15 +482,7 @@ class SecurityScanner:
         return SecurityReport(findings=filtered, files_scanned=1)
 
     def _discover_project_py_files(self, root: Path) -> list[Path]:
-        py_files: list[Path] = []
-        for current_root, dirs, filenames in os.walk(root):
-            dirs[:] = [
-                d for d in dirs if d not in self.IGNORE_DIRS and not d.startswith(".")
-            ]
-            for fname in filenames:
-                if fname.endswith(".py"):
-                    py_files.append(Path(current_root) / fname)
-        return py_files
+        return collect_project_python_files(root)
 
     def scan_project(self, root_dir: Path | str) -> SecurityReport:
         """Scan all Python files in a project for security issues."""

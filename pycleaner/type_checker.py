@@ -8,6 +8,8 @@ and performs type narrowing across conditional branches.
 
 from __future__ import annotations
 
+from pycleaner.discovery import collect_project_python_files
+
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -499,18 +501,7 @@ class TypeChecker:
         return findings
 
     def _discover_python_files(self, root: Path) -> list[Path]:
-        files: list[Path] = []
-        walker = (
-            Path(root).walk() if hasattr(Path, "walk") else self._fallback_walk(root)
-        )
-        for current_root, dirs, filenames in walker:
-            dirs[:] = [
-                d for d in dirs if d not in self.IGNORE_DIRS and not d.startswith(".")
-            ]
-            for fname in filenames:
-                if fname.endswith(".py"):
-                    files.append(Path(current_root) / fname)
-        return files
+        return collect_project_python_files(root)
 
     @staticmethod
     def _count_functions(fpath: Path) -> int:

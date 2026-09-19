@@ -8,6 +8,8 @@ and granular pass control.
 
 from __future__ import annotations
 
+from pycleaner.discovery import DEFAULT_IGNORED_DIRS, collect_project_python_files, is_protected_file
+
 import argparse
 import json
 import os
@@ -153,6 +155,11 @@ def _register_analysis_subparsers(subparsers: Any) -> None:
         "dead-code", help="Detect unused functions, classes, and unreachable code"
     )
     _add_common_args(dc_p)
+    dc_p.add_argument(
+        "--fix",
+        action="store_true",
+        help="Auto-prune unreachable code, redundant pass statements, and dead branches",
+    )
 
     types_p = subparsers.add_parser(
         "types",
@@ -295,6 +302,12 @@ def _add_fix_args(parser: argparse.ArgumentParser) -> None:
         "--no-syntax-fix", action="store_true", help="Disable syntax healing"
     )
     parser.add_argument(
+        "--no-modernize", action="store_true", help="Disable PEP 585/604 code modernization"
+    )
+    parser.add_argument(
+        "--no-dead-code", action="store_true", help="Disable dead code pruning"
+    )
+    parser.add_argument(
         "--no-missing-imports", action="store_true", help="Disable import resolution"
     )
     parser.add_argument(
@@ -305,22 +318,7 @@ def _add_fix_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-_DEFAULT_IGNORE_DIRS = frozenset(
-    {
-        ".git",
-        ".venv",
-        "venv",
-        "env",
-        "__pycache__",
-        "build",
-        "dist",
-        ".tox",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        "site-packages",
-    }
-)
+_DEFAULT_IGNORE_DIRS = DEFAULT_IGNORED_DIRS
 
 
 def _collect_dir_python_files(
@@ -341,10 +339,11 @@ def _collect_target_files(
     files: list[Path] = []
     for target in targets:
         path = Path(target).resolve()
-        if path.is_file() and path.suffix == ".py":
-            files.append(path)
+        if path.is_file():
+            if path.suffix == ".py" and not is_protected_file(path):
+                files.append(path)
         elif path.is_dir():
-            files.extend(_collect_dir_python_files(path, ignore_dirs))
+            files.extend(collect_project_python_files(path))
     return files
 
 
@@ -555,6 +554,10 @@ def _report_file_modifications(
     print_msg(f"[green]{action}:[/green] {py_file.name}")
     for repair in result.syntax_repairs:
         print_msg(f"  • Syntax: {repair}", style="cyan")
+    for mod in result.modernize_transforms:
+        print_msg(f"  • Modernize: {mod}", style="green")
+    for dc in result.dead_code_pruned:
+        print_msg(f"  • Dead-code: {dc}", style="yellow")
     for imp in result.resolved_imports:
         print_msg(f"  • Import: {imp}", style="magenta")
     if result.lint_changed:
@@ -594,6 +597,8 @@ def _build_fix_pipeline(
     if getattr(args, "missing_imports_only", False):
         return CleanPipeline(
             enable_syntax_healing=False,
+            enable_modernizer=False,
+            enable_dead_code_pruning=False,
             enable_import_resolution=True,
             enable_lint_fixing=False,
             enable_formatting=False,
@@ -601,6 +606,8 @@ def _build_fix_pipeline(
         )
     return CleanPipeline(
         enable_syntax_healing=not getattr(args, "no_syntax_fix", False),
+        enable_modernizer=not getattr(args, "no_modernize", False),
+        enable_dead_code_pruning=not getattr(args, "no_dead_code", False),
         enable_import_resolution=not getattr(args, "no_missing_imports", False),
         enable_lint_fixing=not getattr(args, "no_lint_fix", False),
         enable_formatting=not getattr(args, "no_format", False),
@@ -1113,6 +1120,19 @@ def _cmd_dead_code(
         ignore_decorators=set(config.ignore_decorators),
         ignore_names=set(config.ignore_names),
     )
+    if getattr(args, "fix", False):
+        print_msg(f"[bold green]Pruning dead code across {root_dir}...[/bold green]")
+        fix_results = detector.fix_project(root_dir)
+        total_pruned = sum(len(res.pruned_items) for res in fix_results.values())
+        print_msg(f"[green]Successfully fixed {len(fix_results)} file(s), pruned {total_pruned} dead code item(s).[/green]")
+        for p, res in fix_results.items():
+            try:
+                rel_p = p.relative_to(root_dir)
+            except ValueError:
+                rel_p = p
+            print_msg(f"  [cyan]{rel_p}[/cyan]: {len(res.pruned_items)} pruned")
+        return 0
+
     report = detector.scan_project(root_dir)
 
     if getattr(args, "json", False):
