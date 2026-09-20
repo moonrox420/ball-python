@@ -102,9 +102,9 @@ class SyntaxHealer:
         re.MULTILINE,
     )
 
-    # Python 2 except statement: except Exception, e:
+    # Python 2 except statement: except Exception, e: or except (E1, E2), e:
     _PY2_EXCEPT_PATTERN = re.compile(
-        r"^([ \t]*except\s+[\w\.\(\)\s]+),\s*([a-zA-Z_]\w*)\s*:(.*)$",
+        r"^([ \t]*except\s+(?:\((?:[^()]|\([^()]*\))*\)|[\w\.\s]+)),\s*([a-zA-Z_]\w*)\s*:(.*)$",
         re.MULTILINE,
     )
 
