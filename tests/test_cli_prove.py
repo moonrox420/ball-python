@@ -2,17 +2,31 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
 import pytest
 
 from pycleaner.cli import main
 
 
-def test_cli_prove_subcommand_clean_code(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_prove_subcommand_clean_code(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     test_file = tmp_path / "app.py"
-    test_file.write_text("def mul(a: int, b: int) -> int:\n    return a * b\n", encoding="utf-8")
+    test_file.write_text(
+        "def mul(a: int, b: int) -> int:\n    return a * b\n", encoding="utf-8"
+    )
     report_file = tmp_path / "report.json"
 
-    rc = main(["prove", str(test_file), "--output-json", str(report_file), "--proof-iterations", "5"])
+    rc = main(
+        [
+            "prove",
+            str(test_file),
+            "--output-json",
+            str(report_file),
+            "--proof-iterations",
+            "5",
+        ]
+    )
     assert rc == 0
     assert report_file.exists()
     data = json.loads(report_file.read_text(encoding="utf-8"))
@@ -29,15 +43,17 @@ def test_cli_prove_subcommand_with_sound_transformation(tmp_path: Path) -> None:
     )
     report_file = tmp_path / "report.json"
 
-    rc = main([
-        "prove",
-        str(test_file),
-        "--output-json",
-        str(report_file),
-        "--proof-iterations",
-        "5",
-        "--diff",
-    ])
+    rc = main(
+        [
+            "prove",
+            str(test_file),
+            "--output-json",
+            str(report_file),
+            "--proof-iterations",
+            "5",
+            "--diff",
+        ]
+    )
     assert rc == 0
     assert report_file.exists()
     data = json.loads(report_file.read_text(encoding="utf-8"))
@@ -47,9 +63,21 @@ def test_cli_prove_subcommand_with_sound_transformation(tmp_path: Path) -> None:
 
 def test_cli_check_with_prove_flag(tmp_path: Path) -> None:
     test_file = tmp_path / "check_mod.py"
-    test_file.write_text("def sub(a: int, b: int) -> int:\n    return a - b\n", encoding="utf-8")
+    test_file.write_text(
+        "def sub(a: int, b: int) -> int:\n    return a - b\n", encoding="utf-8"
+    )
     report_file = tmp_path / "check_report.json"
 
-    rc = main(["check", str(test_file), "--prove", "--output-json", str(report_file), "--proof-iterations", "5"])
+    rc = main(
+        [
+            "check",
+            str(test_file),
+            "--prove",
+            "--output-json",
+            str(report_file),
+            "--proof-iterations",
+            "5",
+        ]
+    )
     assert rc == 0
     assert report_file.exists()

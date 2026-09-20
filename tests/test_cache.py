@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+
 import pytest
 
-from pycleaner.cache import ContentAddressableCache, compute_content_hash, extract_file_dependencies
+from pycleaner.cache import (
+    ContentAddressableCache,
+    compute_content_hash,
+    extract_file_dependencies,
+)
 from pycleaner.pipeline import CleanPipeline, PipelineOptions
 from pycleaner.verifier import VerificationTier
 
@@ -21,7 +26,9 @@ def test_content_addressable_cache_basics(tmp_path: Path) -> None:
     # Initial get should be miss
     assert cache.get(target, source) is None
 
-    pipeline = CleanPipeline(options=PipelineOptions(enable_cache=True, cache_db_path=str(db_file)))
+    pipeline = CleanPipeline(
+        options=PipelineOptions(enable_cache=True, cache_db_path=str(db_file))
+    )
     res1 = pipeline.process_file(target, apply_changes=False)
 
     # Cache should now have the entry

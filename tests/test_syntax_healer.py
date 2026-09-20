@@ -159,7 +159,6 @@ class TestSyntaxHealer(unittest.TestCase):
         self.assertNotIn("def process(\n:", res.code)
         self.assertEqual(res.code, code)
 
-
     def test_unindented_block_after_function_definition(self) -> None:
         raw_code = (
             "class Bot:\n"

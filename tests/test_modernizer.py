@@ -5,6 +5,7 @@ Unit tests for the Modernizer engine.
 from __future__ import annotations
 
 import ast
+
 from pycleaner.modernizer import Modernizer
 
 
@@ -58,11 +59,7 @@ class TestModernizer:
         ast.parse(res.code)
 
     def test_legacy_object_inheritance(self) -> None:
-        source = (
-            "class BaseService(object):\n"
-            "    def run(self):\n"
-            "        pass\n"
-        )
+        source = "class BaseService(object):\n" "    def run(self):\n" "        pass\n"
         modernizer = Modernizer()
         res = modernizer.modernize(source)
         assert res.changed
@@ -70,7 +67,7 @@ class TestModernizer:
         ast.parse(res.code)
 
     def test_unicode_prefix_pruning(self) -> None:
-        source = 'msg = u"hello world"\nother = u\'test\'\n'
+        source = "msg = u\"hello world\"\nother = u'test'\n"
         modernizer = Modernizer()
         res = modernizer.modernize(source)
         assert res.changed
@@ -81,9 +78,9 @@ class TestModernizer:
     def test_future_annotations_placement_with_docstring(self) -> None:
         source = (
             '"""Module docstring."""\n'
-            '\n'
-            'def foo(x: List[int]) -> None:\n'
-            '    pass\n'
+            "\n"
+            "def foo(x: List[int]) -> None:\n"
+            "    pass\n"
         )
         modernizer = Modernizer()
         res = modernizer.modernize(source)

@@ -58,7 +58,6 @@ class TestDependencyAuditor(unittest.TestCase):
             self.assertIn("httpx", updated_reqs)
             self.assertNotIn("old-unused-pkg", updated_reqs)
 
-
     def test_nmap_maps_to_python_nmap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

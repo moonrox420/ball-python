@@ -5,6 +5,7 @@ Unit tests for DeadCodeFixer engine.
 from __future__ import annotations
 
 import ast
+
 from pycleaner.dead_code_detector import DeadCodeDetector, DeadCodeFixer
 
 
@@ -43,12 +44,7 @@ class TestDeadCodeFixer:
         ast.parse(res.code)
 
     def test_prune_redundant_pass_when_statements_exist(self) -> None:
-        source = (
-            "def task():\n"
-            "    do_step_1()\n"
-            "    do_step_2()\n"
-            "    pass\n"
-        )
+        source = "def task():\n" "    do_step_1()\n" "    do_step_2()\n" "    pass\n"
         fixer = DeadCodeFixer()
         res = fixer.fix(source)
         assert res.changed
@@ -57,10 +53,7 @@ class TestDeadCodeFixer:
         ast.parse(res.code)
 
     def test_preserve_pass_when_only_statement(self) -> None:
-        source = (
-            "def empty_hook():\n"
-            "    pass\n"
-        )
+        source = "def empty_hook():\n" "    pass\n"
         fixer = DeadCodeFixer()
         res = fixer.fix(source)
         assert not res.changed

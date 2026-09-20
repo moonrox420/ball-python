@@ -1,4 +1,5 @@
 import pytest
+
 from pycleaner.verifier import (
     IsolatedDifferentialVerifier,
     VerificationTier,
@@ -19,8 +20,12 @@ def compute(x: int, y: int) -> int:
         return x + y
     return y
 """
-    verifier = IsolatedDifferentialVerifier(iterations=15, timeout_seconds=1.0, base_seed=42)
-    receipt = verifier.verify_transformation("math_mod.py", original, transformed, "compute")
+    verifier = IsolatedDifferentialVerifier(
+        iterations=15, timeout_seconds=1.0, base_seed=42
+    )
+    receipt = verifier.verify_transformation(
+        "math_mod.py", original, transformed, "compute"
+    )
 
     assert receipt.tier == VerificationTier.TIER_A_PROVEN
     assert receipt.iterations_run == 15
@@ -41,8 +46,12 @@ def is_positive(x: int) -> bool:
         return True
     return False
 """
-    verifier = IsolatedDifferentialVerifier(iterations=30, timeout_seconds=1.0, base_seed=42)
-    receipt = verifier.verify_transformation("logic.py", original, flawed, "is_positive")
+    verifier = IsolatedDifferentialVerifier(
+        iterations=30, timeout_seconds=1.0, base_seed=42
+    )
+    receipt = verifier.verify_transformation(
+        "logic.py", original, flawed, "is_positive"
+    )
 
     assert receipt.tier == VerificationTier.TIER_C_REFUSED
     assert receipt.counterexample is not None
@@ -57,7 +66,9 @@ def test_verifier_tier_b_on_unresolvable_callable() -> None:
     original = "x = 10\ny = 20"
     transformed = "x = 10\ny = 25"
     verifier = IsolatedDifferentialVerifier(iterations=5, timeout_seconds=0.5)
-    receipt = verifier.verify_transformation("script.py", original, transformed, "non_existent")
+    receipt = verifier.verify_transformation(
+        "script.py", original, transformed, "non_existent"
+    )
 
     assert receipt.tier == VerificationTier.TIER_B_SUGGESTED
     assert "could not be isolated" in receipt.reason

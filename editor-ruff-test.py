@@ -5,6 +5,7 @@ within the PipViper IDE. The editor integrates tightly with local Jedi services
 to provide autocomplete, hover, signature documentation, and reference lookup.
 It also embeds a self-healing dependency warning banner atop the editor canvas.
 """
+
 # pyright: reportMissingImports=false
 
 from __future__ import annotations
@@ -65,6 +66,7 @@ try:
     )
     from .vcs import GitDiffHunk, GitDiffType  # type: ignore[import-not-found]
 except (ImportError, TypeError):
+
     @dataclass
     class CodeIssue:
         line: int = 0
@@ -152,6 +154,7 @@ except (ImportError, TypeError):
 
     class JediService:
         pass
+
 
 _LOGGER: logging.Logger = logging.getLogger("src.editor")
 _DEDENT_TRIGGER_PATTERN: re.Pattern[str] = re.compile(

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ballpython"
-version = "2.0.0"
+version = "2.0.1"
 description = "The Ultimate Static Python Intelligence, Healing, Type Verification, and Security Suite"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -79,7 +79,11 @@ max-workers = 4
 profile = "black"
 line_length = 88
 skip_gitignore = true
-extend_skip = [".release-test", ".pytest_temp"]
+extend_skip = [
+    ".release-test",
+    ".pytest_temp",
+    "editor-*.py",
+]
 
 [tool.black]
 line-length = 88
@@ -88,6 +92,7 @@ extend-exclude = '''
 /(
   \.release-test
   | \.pytest_temp
+  | editor-.*\.py
 )/
 '''
 
@@ -100,4 +105,3 @@ exclude = [
     ".pytest_temp",
     "editor-*.py",
 ]
-

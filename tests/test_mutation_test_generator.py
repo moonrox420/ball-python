@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import pytest
 
-from pycleaner.test_generator import TestGenerator, AstMutator
+from pycleaner.test_generator import AstMutator, TestGenerator
 
 
 def test_generator_emits_no_tautologies_and_real_assertions(tmp_path: Path) -> None:

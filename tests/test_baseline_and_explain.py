@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
 import pytest
 
 from pycleaner.baseline import BaselineFingerprint, BaselineManager
@@ -31,10 +32,14 @@ def test_baseline_filter_new_debt(tmp_path: Path) -> None:
     baseline_file = tmp_path / "baseline.json"
     mgr = BaselineManager(baseline_file)
 
-    old_issue = BaselineFingerprint(rule="DC001", file="app.py", line=10, symbol="unused_x")
+    old_issue = BaselineFingerprint(
+        rule="DC001", file="app.py", line=10, symbol="unused_x"
+    )
     mgr.save_baseline([old_issue], tmp_path)
 
-    new_issue = BaselineFingerprint(rule="SEC002", file="shell.py", line=5, symbol="popen")
+    new_issue = BaselineFingerprint(
+        rule="SEC002", file="shell.py", line=5, symbol="popen"
+    )
 
     tolerated, new_debt = mgr.filter_new_issues([old_issue, new_issue])
     assert len(tolerated) == 1
