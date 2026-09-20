@@ -18,7 +18,7 @@ from pycleaner.discovery import (
     is_protected_file,
 )
 
-__version__ = "2.0.4"
+__version__ = "2.0.5"
 __all__ = [
     "BaselineFingerprint",
     "BaselineManager",

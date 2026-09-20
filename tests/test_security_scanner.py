@@ -210,3 +210,29 @@ class TestSecurityScanner:
     def test_security_report_by_category(self) -> None:
         report = SecurityReport(findings=[])
         assert len(report.by_category("dangerous-eval")) == 0
+
+    def test_assert_suppressed_in_module_importing_pytest(self) -> None:
+        source = textwrap.dedent("""
+            import pytest
+
+            def test_feature():
+                assert 1 + 1 == 2
+        """)
+        scanner = SecurityScanner(severity_threshold="LOW")
+        report = scanner.scan_source(source, filename="test_root_file.py")
+        categories = {f.category for f in report.findings}
+        assert "assert-in-production" not in categories
+
+    def test_safe_sql_composition_not_flagged(self) -> None:
+        source = textwrap.dedent("""
+            from psycopg import sql
+
+            def get_data(conn, tbl):
+                with conn.cursor() as cur:
+                    cur.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(tbl)))
+        """)
+        scanner = SecurityScanner()
+        report = scanner.scan_source(source, filename="query.py")
+        categories = {f.category for f in report.findings}
+        assert "sql-injection" not in categories
+

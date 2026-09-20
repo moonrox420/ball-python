@@ -190,6 +190,24 @@ class _DangerousCallDetector(ast.NodeVisitor):
         self.filepath = filepath
         self.source_lines = source_lines
         self.findings: list[SecurityFinding] = []
+        self._is_test_module: bool = False
+
+    def check_tree(self, tree: ast.AST) -> None:
+        """Inspect imports to determine if module is a test file."""
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in ("pytest", "unittest", "mock"):
+                        self._is_test_module = True
+                        return
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and node.module.split(".")[0] in (
+                    "pytest",
+                    "unittest",
+                    "mock",
+                ):
+                    self._is_test_module = True
+                    return
 
     def _get_snippet(self, lineno: int) -> str:
         if 1 <= lineno <= len(self.source_lines):
@@ -245,8 +263,11 @@ class _DangerousCallDetector(ast.NodeVisitor):
         parts = [p.lower() for p in Path(filepath).parts[:-1]]
         return any(p in ("tests", "test", "testing") for p in parts)
 
+    def _is_test(self) -> bool:
+        return self._is_test_module or self._is_test_path(self.filepath)
+
     def visit_Assert(self, node: ast.Assert) -> None:
-        if self._is_test_path(self.filepath):
+        if self._is_test():
             return
         self._add_finding(
             SecurityFinding(
@@ -429,7 +450,20 @@ class _DangerousCallDetector(ast.NodeVisitor):
         if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add):
             return True
         if isinstance(arg, ast.Call):
-            return isinstance(arg.func, ast.Attribute) and arg.func.attr == "format"
+            if isinstance(arg.func, ast.Attribute) and arg.func.attr == "format":
+                # Check for psycopg safe sql.SQL(...).format(...) query composition
+                val = arg.func.value
+                if isinstance(val, ast.Call):
+                    func = val.func
+                    func_id = ""
+                    if isinstance(func, ast.Name):
+                        func_id = func.id
+                    elif isinstance(func, ast.Attribute):
+                        func_id = func.attr
+                    if func_id == "SQL":
+                        return False
+                return True
+            return False
         if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Mod):
             return isinstance(arg.left, ast.Constant) and isinstance(
                 arg.left.value, str
@@ -483,6 +517,7 @@ class SecurityScanner:
             tree = ast.parse(source, filename=filename)
             source_lines = source.splitlines()
             detector = _DangerousCallDetector(filename, source_lines)
+            detector.check_tree(tree)
             detector.visit(tree)
             findings.extend(detector.findings)
         except SyntaxError:
