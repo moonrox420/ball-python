@@ -20,18 +20,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pycleaner.baseline import BaselineFingerprint, BaselineManager
+from pycleaner.cache import ContentAddressableCache
 from pycleaner.complexity_analyzer import ComplexityAnalyzer
 from pycleaner.config import ConfigError, PyCleanerConfig, load_config
 from pycleaner.dead_code_detector import DeadCodeDetector
 from pycleaner.dependency_auditor import DependencyAuditor, DependencyAuditReport
+from pycleaner.explanations import get_explanation, list_rules
 from pycleaner.pipeline import CleanPipeline, CleanResult
 from pycleaner.security_scanner import SecurityScanner
 from pycleaner.taint_engine import TaintEngine
 from pycleaner.test_generator import TestGenerator
 from pycleaner.type_checker import TypeChecker
+from pycleaner.verifier import CounterExample, ProofReceipt, VerificationTier
 
 try:
     from rich.console import Console
+    from rich.panel import Panel
     from rich.progress import (
         BarColumn,
         Progress,
@@ -50,6 +55,7 @@ except ImportError:
 SUBCOMMANDS = {
     "fix",
     "check",
+    "prove",
     "audit",
     "scan",
     "complexity",
@@ -61,9 +67,12 @@ SUBCOMMANDS = {
     "taint",
     "test-gen",
     "ultimate",
+    "baseline",
+    "explain",
 }
 
 _OPTIONS_WITH_VALUE = {
+    "--config",
     "--workers",
     "--severity",
     "--max-cyclomatic",
@@ -72,6 +81,12 @@ _OPTIONS_WITH_VALUE = {
     "--max-args",
     "--interval",
     "--output-dir",
+    "--output-json",
+    "--proof-iterations",
+    "--proof-seed",
+    "--baseline",
+    "--cache-db",
+    "--output",
 }
 
 
@@ -119,6 +134,18 @@ def _register_fix_subparsers(subparsers: Any) -> None:
     _add_common_args(ult_p)
     _add_fix_args(ult_p)
     ult_p.add_argument("--diff", action="store_true", help="Show unified diffs")
+
+    prove_p = subparsers.add_parser(
+        "prove", help="Verify transformations using differential execution fuzzing (Tier A/B/C)"
+    )
+    _add_common_args(prove_p)
+    _add_fix_args(prove_p)
+    prove_p.add_argument("--diff", action="store_true", help="Show unified diffs")
+    prove_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply proven (Tier A) changes to disk",
+    )
 
 
 def _register_analysis_subparsers(subparsers: Any) -> None:
@@ -200,6 +227,28 @@ def _register_tool_subparsers(subparsers: Any) -> None:
         "--preview",
         action="store_true",
         help="Print generated tests to stdout without saving",
+    )
+
+    baseline_p = subparsers.add_parser(
+        "baseline",
+        help="Generate or update technical debt baseline for ratchet enforcement",
+    )
+    _add_common_args(baseline_p)
+    baseline_p.add_argument(
+        "--output",
+        default=".pycleaner/baseline.json",
+        help="Path to save baseline JSON (default: .pycleaner/baseline.json)",
+    )
+
+    explain_p = subparsers.add_parser(
+        "explain",
+        help="Explain diagnostic codes, security rules, and verification tiers",
+    )
+    explain_p.add_argument(
+        "code",
+        nargs="?",
+        default=None,
+        help="Diagnostic rule code or topic to explain (e.g. DC001, SEC001, PROVE001, or omit to list all)",
     )
 
 
@@ -315,6 +364,44 @@ def _add_fix_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--no-format", action="store_true", help="Disable code formatting"
+    )
+    parser.add_argument(
+        "--prove",
+        action="store_true",
+        help="Prove transformations preserve behavior using differential execution fuzzing",
+    )
+    parser.add_argument(
+        "--proof-iterations",
+        type=int,
+        default=50,
+        help="Number of differential fuzzing test cases per callable (default: 50)",
+    )
+    parser.add_argument(
+        "--proof-seed",
+        type=int,
+        default=None,
+        help="Deterministic random seed for differential proof engine",
+    )
+    parser.add_argument(
+        "--output-json",
+        default=".pycleaner/verification-report.json",
+        help="Path to save verification receipt JSON",
+    )
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="Enable content-addressable incremental caching (.pycleaner/cache.db)",
+    )
+    parser.add_argument(
+        "--cache-db",
+        default=".pycleaner/cache.db",
+        help="Path to SQLite cache database (default: .pycleaner/cache.db)",
+    )
+    parser.add_argument(
+        "--baseline",
+        default=None,
+        metavar="PATH",
+        help="Path to baseline JSON for ratchet enforcement (e.g. .pycleaner/baseline.json)",
     )
 
 
@@ -466,6 +553,9 @@ def _route_command(
         "watch": lambda: _cmd_watch(args, config, print_msg),
         "ultimate": lambda: _cmd_ultimate(args, config, print_msg, console),
         "all": lambda: _run_all_command(args, config, print_msg, console),
+        "prove": lambda: _cmd_prove(args, config, print_msg, console),
+        "baseline": lambda: _cmd_baseline(args, config, print_msg, console),
+        "explain": lambda: _cmd_explain(args, print_msg, console),
         "check": lambda: _cmd_fix(
             args,
             config,
@@ -507,7 +597,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     root_dir = target_path if target_path.is_dir() else target_path.parent
 
     try:
-        config = load_config(project_root=root_dir)
+        config = load_config(
+            project_root=root_dir,
+            explicit_config_file=getattr(args, "config", None),
+        )
     except ConfigError as err:
         print_msg(f"[red]Configuration Error:[/red] {err}")
         return 2
@@ -526,6 +619,11 @@ class _FixBatchState:
     changed_count: int = 0
     error_count: int = 0
     diagnostics: list[dict[str, str]] = field(default_factory=list)
+    proven_count: int = 0
+    suggested_count: int = 0
+    refused_count: int = 0
+    proof_receipts: list[ProofReceipt] = field(default_factory=list)
+    counterexamples: list[CounterExample] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -577,6 +675,28 @@ def _accumulate_result(
     if result.diagnostics:
         state.diagnostics.extend(result.diagnostics)
 
+    if result.proof_receipts:
+        state.proof_receipts.extend(result.proof_receipts)
+    if result.refused_changes:
+        state.counterexamples.extend(result.refused_changes)
+        state.refused_count += len(result.refused_changes)
+    if result.verification_tier == VerificationTier.TIER_A_PROVEN:
+        state.proven_count += 1
+    elif result.verification_tier == VerificationTier.TIER_B_SUGGESTED:
+        state.suggested_count += 1
+    elif result.verification_tier == VerificationTier.TIER_C_REFUSED:
+        if not is_json:
+            print_msg(
+                f"[bold red]Refused (Tier C):[/bold red] {py_file.name} — transformation falsified by differential fuzzing; rolled back!"
+            )
+            for ce in result.refused_changes:
+                print_msg(
+                    f"  • {ce.callable_name} diverged on args={ce.arguments} kwargs={ce.keyword_arguments}"
+                )
+                print_msg(
+                    f"    original={ce.original_result or ce.original_error} vs transformed={ce.transformed_result or ce.transformed_error} (seed {ce.seed})"
+                )
+
     if result.error:
         state.error_count += 1
         if not is_json:
@@ -594,6 +714,11 @@ def _accumulate_result(
 def _build_fix_pipeline(
     args: argparse.Namespace, config: PyCleanerConfig
 ) -> CleanPipeline:
+    verify_proofs = getattr(args, "prove", False) or getattr(args, "command", None) == "prove"
+    proof_iterations = getattr(args, "proof_iterations", 50)
+    proof_seed = getattr(args, "proof_seed", None)
+    enable_cache = getattr(args, "cache", False)
+    cache_db_path = getattr(args, "cache_db", ".pycleaner/cache.db")
     if getattr(args, "missing_imports_only", False):
         return CleanPipeline(
             enable_syntax_healing=False,
@@ -603,6 +728,11 @@ def _build_fix_pipeline(
             enable_lint_fixing=False,
             enable_formatting=False,
             config=config,
+            verify_proofs=verify_proofs,
+            proof_iterations=proof_iterations,
+            proof_seed=proof_seed,
+            enable_cache=enable_cache,
+            cache_db_path=cache_db_path,
         )
     return CleanPipeline(
         enable_syntax_healing=not getattr(args, "no_syntax_fix", False),
@@ -612,6 +742,11 @@ def _build_fix_pipeline(
         enable_lint_fixing=not getattr(args, "no_lint_fix", False),
         enable_formatting=not getattr(args, "no_format", False),
         config=config,
+        verify_proofs=verify_proofs,
+        proof_iterations=proof_iterations,
+        proof_seed=proof_seed,
+        enable_cache=enable_cache,
+        cache_db_path=cache_db_path,
     )
 
 
@@ -729,7 +864,12 @@ def _compute_fix_exit_code(
     state: _FixBatchState,
     audit_report: DependencyAuditReport,
     apply_changes: bool,
+    is_prove_cmd: bool = False,
 ) -> int:
+    if state.refused_count > 0:
+        return 1
+    if is_prove_cmd:
+        return 0 if state.error_count == 0 else 1
     if not apply_changes and (
         state.changed_count > 0
         or state.error_count > 0
@@ -796,7 +936,267 @@ def _cmd_fix(
     print_msg(
         f"\n[bold]Summary: {len(py_files)} inspected, {state.changed_count} updated, {state.error_count} errors.[/bold]"
     )
-    return _compute_fix_exit_code(state, audit_report, opts.apply_changes)
+
+    if pipeline.verify_proofs:
+        total_proven_callables = sum(
+            1 for r in state.proof_receipts if r.tier == VerificationTier.TIER_A_PROVEN
+        )
+        total_refused_callables = len(state.counterexamples)
+        if not is_json:
+            print_msg("\n[bold cyan]Verification Receipts (Trust Ladder):[/bold cyan]")
+            print_msg(
+                f"  [bold green]• Proven (Tier A):[/bold green] {total_proven_callables} callable(s) invariant-preserving across {pipeline.proof_iterations} input(s)"
+            )
+            if state.suggested_count > 0:
+                print_msg(
+                    f"  [yellow]• Suggested (Tier B):[/yellow] {state.suggested_count} module(s) (not isolated for dynamic fuzzing)"
+                )
+            if total_refused_callables > 0:
+                print_msg(
+                    f"  [bold red]• Refused (Tier C):[/bold red] {total_refused_callables} transformation(s) diverged; rolled back"
+                )
+
+        output_report_path = getattr(
+            args, "output_json", ".pycleaner/verification-report.json"
+        )
+        try:
+            out_p = Path(output_report_path)
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            report_data = {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "total_inspected": len(py_files),
+                "proven_tier_a_callables": total_proven_callables,
+                "suggested_tier_b_files": state.suggested_count,
+                "refused_tier_c_callables": total_refused_callables,
+                "proof_receipts": [
+                    {
+                        "file": r.filepath,
+                        "callable": r.callable_name,
+                        "tier": r.tier.value,
+                        "iterations": r.iterations_run,
+                        "seed": r.seed,
+                        "duration_ms": r.duration_ms,
+                        "reason": r.reason,
+                    }
+                    for r in state.proof_receipts
+                ],
+                "counterexamples": [
+                    {
+                        "callable": ce.callable_name,
+                        "arguments": [repr(a) for a in ce.arguments],
+                        "kwargs": {k: repr(v) for k, v in ce.keyword_arguments.items()},
+                        "original_result": ce.original_result,
+                        "original_error": ce.original_error,
+                        "transformed_result": ce.transformed_result,
+                        "transformed_error": ce.transformed_error,
+                        "seed": ce.seed,
+                    }
+                    for ce in state.counterexamples
+                ],
+            }
+            out_p.write_text(json.dumps(report_data, indent=2), encoding="utf-8")
+            if not is_json:
+                print_msg(f"  [dim]Report saved to {output_report_path}[/dim]")
+        except OSError as e:
+            if not is_json:
+                print_msg(f"  [red]Failed to write verification report:[/red] {e}")
+
+    if getattr(args, "baseline", None):
+        baseline_mgr = BaselineManager(args.baseline)
+        current_issues: list[BaselineFingerprint] = []
+        for diag in state.diagnostics:
+            current_issues.append(
+                BaselineManager.create_fingerprint(
+                    rule=diag.get("rule", "LINT001"),
+                    file_path=diag.get("file", "<unknown>"),
+                    line=int(diag.get("line", 1)),
+                    symbol=diag.get("message", "diagnostic violation"),
+                    root_dir=root_dir,
+                )
+            )
+        tolerated, new_debt = baseline_mgr.filter_new_issues(current_issues)
+        if not is_json:
+            print_msg(f"\n[bold cyan]Baseline Ratchet Enforcement ({args.baseline}):[/bold cyan]")
+            if tolerated:
+                print_msg(f"  • Baseline tolerated: [yellow]{len(tolerated)}[/yellow] existing issue(s)")
+            if new_debt:
+                print_msg(f"  • [bold red]Ratchet Violation:[/bold red] {len(new_debt)} new technical debt issue(s) detected!")
+                for nd in new_debt:
+                    print_msg(f"    [red]• [X] {nd.rule} at {nd.file}:{nd.line} ({nd.symbol})[/red]")
+                return 1
+            else:
+                print_msg("  • [bold green]Ratchet Passed:[/bold green] 0 new technical debt issues introduced.")
+        elif new_debt:
+            return 1
+
+    is_prove = getattr(args, "command", None) == "prove"
+    return _compute_fix_exit_code(
+        state, audit_report, opts.apply_changes, is_prove_cmd=is_prove
+    )
+
+
+def _cmd_prove(
+    args: argparse.Namespace,
+    config: PyCleanerConfig,
+    print_msg: Any,
+    console: Any,
+) -> int:
+    """The Proof-Carrying Differential Equivalence Runner."""
+    setattr(args, "prove", True)
+    diff = getattr(args, "diff", False)
+    apply_changes = getattr(args, "apply", False)
+
+    print_msg(
+        "[bold cyan]=== PyCleaner Prove: Differential Equivalence Verification ===[/bold cyan]\n"
+    )
+
+    return _cmd_fix(
+        args,
+        config,
+        print_msg,
+        console,
+        _FixOptions(
+            apply_changes=apply_changes,
+            show_diff=diff,
+            backup=config.backup and not getattr(args, "no_backup", False),
+        ),
+    )
+
+
+def _cmd_baseline(
+    args: argparse.Namespace,
+    config: PyCleanerConfig,
+    print_msg: Any,
+    console: Any,
+) -> int:
+    """Generate or update technical debt baseline for ratchet enforcement."""
+    output_path = Path(getattr(args, "output", ".pycleaner/baseline.json"))
+    root_dir = _resolve_root_dir(getattr(args, "paths", None))
+    py_files = discover_python_files(args.paths, config=config, root=root_dir)
+
+    print_msg("[bold cyan]=== Generating PyCleaner Technical Debt Baseline ===[/bold cyan]")
+    print_msg(f"Inspecting {len(py_files)} file(s) across {root_dir.name}...")
+
+    fingerprints: list[BaselineFingerprint] = []
+
+    detector = DeadCodeDetector()
+    dead_code_report = detector.scan_project(root_dir)
+    for item in dead_code_report.items:
+        if item.kind == "unused-import":
+            rule = "DC002"
+        elif item.kind in ("function", "class"):
+            rule = "DC003"
+        else:
+            rule = "DC001"
+        fingerprints.append(
+            BaselineManager.create_fingerprint(
+                rule=rule,
+                file_path=item.filepath,
+                line=item.lineno,
+                symbol=item.name,
+                root_dir=root_dir,
+            )
+        )
+
+    scanner = SecurityScanner()
+    sec_report = scanner.scan_project(root_dir)
+    for finding in sec_report.findings:
+        fingerprints.append(
+            BaselineManager.create_fingerprint(
+                rule=finding.category,
+                file_path=finding.filepath,
+                line=finding.lineno,
+                symbol=finding.message,
+                root_dir=root_dir,
+            )
+        )
+
+    analyzer = ComplexityAnalyzer()
+    comp_report = analyzer.analyze_project(root_dir)
+    thresholds = (
+        getattr(args, "max_cyclomatic", config.max_cyclomatic_complexity),
+        getattr(args, "max_cognitive", config.max_cognitive_complexity),
+        getattr(args, "max_lines", config.max_function_length),
+        getattr(args, "max_args", config.max_arguments),
+    )
+    violations = comp_report.above_threshold(*thresholds)
+    for v in violations:
+        fingerprints.append(
+            BaselineManager.create_fingerprint(
+                rule="CMP001",
+                file_path=v.filepath,
+                line=v.lineno,
+                symbol=f"{v.qualified_name} (CC={v.cyclomatic})",
+                root_dir=root_dir,
+            )
+        )
+
+    manager = BaselineManager(output_path)
+    saved_file = manager.save_baseline(fingerprints, root_dir)
+
+    print_msg(f"\n[bold green]Baseline successfully recorded![/bold green]")
+    print_msg(f"  • Issues snapshotted: [bold yellow]{len(fingerprints)}[/bold yellow]")
+    print_msg(f"  • Output file: [bold]{saved_file}[/bold]")
+    print_msg("\n[dim]Ratchet Guarantee: Technical debt in this repository is now locked. Run CI with:[/dim]")
+    print_msg(f"  [cyan]pycleaner check --baseline {output_path}[/cyan]\n")
+
+    return 0
+
+
+def _cmd_explain(
+    args: argparse.Namespace,
+    print_msg: Any,
+    console: Any,
+) -> int:
+    """Explain diagnostic codes, security rules, and verification tiers."""
+    code = getattr(args, "code", None)
+
+    if not code:
+        rules = list_rules()
+        print_msg("[bold cyan]PyCleaner Diagnostic & Verification Rules Catalog[/bold cyan]\n")
+        if console and has_rich:
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Code", style="cyan", width=10)
+            table.add_column("Category", style="yellow", width=25)
+            table.add_column("Severity", width=12)
+            table.add_column("Title", style="white")
+            for r in rules:
+                sev_color = "red" if r.severity in ("Critical", "High") else ("yellow" if r.severity == "Medium" else "green")
+                table.add_row(r.code, r.category, f"[{sev_color}]{r.severity}[/{sev_color}]", r.title)
+            console.print(table)
+        else:
+            for r in rules:
+                print(f"{r.code:8} [{r.severity:8}] {r.title} ({r.category})")
+        print_msg("\n[dim]Run 'pycleaner explain <CODE>' for full details and remediation examples.[/dim]")
+        return 0
+
+    rule = get_explanation(code)
+    if rule is None:
+        print_msg(f"[bold red]Unknown rule code or topic:[/bold red] '{code}'")
+        print_msg("[dim]Run 'pycleaner explain' without arguments to list all available rules.[/dim]")
+        return 1
+
+    sev_color = "red" if rule.severity in ("Critical", "High") else ("yellow" if rule.severity == "Medium" else "green")
+    print_msg(f"\n[bold cyan]PyCleaner Rule Guide: {rule.code} - {rule.title}[/bold cyan]")
+    print_msg(f"  [bold]Category:[/bold] {rule.category} | [bold]Severity:[/bold] [{sev_color}]{rule.severity}[/{sev_color}]\n")
+    print_msg(f"[bold]Description:[/bold]\n{rule.description}\n")
+
+    if rule.vulnerable_example:
+        print_msg("[bold red][X] Flawed / Baseline Example:[/bold red]")
+        if console and has_rich:
+            console.print(Syntax(rule.vulnerable_example, "python", theme="monokai", line_numbers=False))
+        else:
+            print(rule.vulnerable_example)
+
+    if rule.remediated_example:
+        print_msg("\n[bold green][+] Verified / Remediated Example:[/bold green]")
+        if console and has_rich:
+            console.print(Syntax(rule.remediated_example, "python", theme="monokai", line_numbers=False))
+        else:
+            print(rule.remediated_example)
+
+    print_msg(f"\n[bold]Remediation Details & Proof Invariants:[/bold]\n{rule.remediation_details}\n")
+    return 0
 
 
 def _render_audit_json(audit_report: DependencyAuditReport) -> int:
@@ -1518,6 +1918,8 @@ def _cmd_watch(
 
 def _cmd_hook(args: argparse.Namespace, print_msg) -> int:
     """Output pre-commit hook configuration and setup instructions."""
+    from pycleaner import __version__
+
     hook_yaml = (
         "- id: pycleaner\n"
         "  name: pycleaner\n"
@@ -1543,12 +1945,12 @@ def _cmd_hook(args: argparse.Namespace, print_msg) -> int:
     print_msg(
         "To integrate pycleaner with pre-commit, add the following to [bold].pre-commit-hooks.yaml[/bold]:\n"
     )
-    print_msg(hook_yaml)
+    print_msg(hook_yaml.replace("[", "\\["))
     print_msg("Then in your repository's [bold].pre-commit-config.yaml[/bold], add:\n")
     print_msg(
         "  repos:\n"
-        "    - repo: https://github.com/your-org/pycleaner\n"
-        "      rev: v2.0.0\n"
+        "    - repo: https://github.com/moonrox420/ball-python\n"
+        f"      rev: v{__version__}\n"
         "      hooks:\n"
         "        - id: pycleaner\n"
         '          args: ["check"]  # Use check for non-mutating validation\n'

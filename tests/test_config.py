@@ -119,3 +119,37 @@ class TestConfig:
         cfg = load_config()
         with pytest.raises(FrozenInstanceError):
             cfg.line_length = 100  # type: ignore[misc]
+
+    def test_explicit_config_file_flat_toml(self, tmp_path: Path) -> None:
+        explicit = tmp_path / "custom.toml"
+        explicit.write_text("line-length = 111\n", encoding="utf-8")
+        cfg = load_config(project_root=None, explicit_config_file=explicit)
+        assert cfg.line_length == 111
+
+    def test_explicit_config_file_pyproject_form(self, tmp_path: Path) -> None:
+        explicit = tmp_path / "pyproject.toml"
+        explicit.write_text(
+            textwrap.dedent("""\
+                [tool.pycleaner]
+                line-length = 121
+            """),
+            encoding="utf-8",
+        )
+        cfg = load_config(project_root=None, explicit_config_file=explicit)
+        assert cfg.line_length == 121
+        assert cfg.backup is True
+
+    def test_explicit_config_file_missing_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(ConfigError, match="Config file not found"):
+            load_config(explicit_config_file=tmp_path / "absent.toml")
+
+    def test_explicit_config_overrides_project_discovery(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "pyproject.toml").write_text(
+            "[tool.pycleaner]\nline-length = 90\n", encoding="utf-8"
+        )
+        explicit = tmp_path / "override.toml"
+        explicit.write_text("line-length = 132\n", encoding="utf-8")
+        cfg = load_config(project_root=project, explicit_config_file=explicit)
+        assert cfg.line_length == 132

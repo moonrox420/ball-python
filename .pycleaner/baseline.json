@@ -1,0 +1,344 @@
+{
+  "version": 1,
+  "timestamp": "2026-09-20T03:50:19Z",
+  "root_dir": "C:\\Users\\droxa\\ball-python\\pycleaner",
+  "issue_count": 48,
+  "fingerprints": [
+    {
+      "rule": "DC001",
+      "file": "cache.py",
+      "line": 49,
+      "symbol": "empty except",
+      "hash": "8a2f619ad5b5c2ed"
+    },
+    {
+      "rule": "DC003",
+      "file": "cache.py",
+      "line": 237,
+      "symbol": "get_provenance",
+      "hash": "5579e5901c19ee50"
+    },
+    {
+      "rule": "DC003",
+      "file": "cache.py",
+      "line": 252,
+      "symbol": "invalidate",
+      "hash": "958f96ad7d366783"
+    },
+    {
+      "rule": "DC003",
+      "file": "cache.py",
+      "line": 259,
+      "symbol": "clear",
+      "hash": "1bad334580145767"
+    },
+    {
+      "rule": "DC003",
+      "file": "cache.py",
+      "line": 265,
+      "symbol": "get_stats",
+      "hash": "099fe102214bbd28"
+    },
+    {
+      "rule": "DC001",
+      "file": "complexity_analyzer.py",
+      "line": 333,
+      "symbol": "IGNORE_DIRS",
+      "hash": "7384798bd98b1fc4"
+    },
+    {
+      "rule": "DC001",
+      "file": "dead_code_detector.py",
+      "line": 357,
+      "symbol": "IGNORE_DIRS",
+      "hash": "f2f8e8c7b4fb728b"
+    },
+    {
+      "rule": "DC001",
+      "file": "dependency_auditor.py",
+      "line": 162,
+      "symbol": "empty except",
+      "hash": "ae1f14ae4e7c080c"
+    },
+    {
+      "rule": "DC001",
+      "file": "dependency_auditor.py",
+      "line": 235,
+      "symbol": "empty except",
+      "hash": "950bd973757ee55b"
+    },
+    {
+      "rule": "DC001",
+      "file": "dependency_auditor.py",
+      "line": 337,
+      "symbol": "empty except",
+      "hash": "b8d31fba469249a2"
+    },
+    {
+      "rule": "DC001",
+      "file": "modernizer.py",
+      "line": 290,
+      "symbol": "empty except",
+      "hash": "09b28f8257482ad5"
+    },
+    {
+      "rule": "DC001",
+      "file": "security_scanner.py",
+      "line": 429,
+      "symbol": "IGNORE_DIRS",
+      "hash": "32115c2d99ce8d74"
+    },
+    {
+      "rule": "DC001",
+      "file": "type_checker.py",
+      "line": 426,
+      "symbol": "IGNORE_DIRS",
+      "hash": "827a79644f9c0f6d"
+    },
+    {
+      "rule": "DC001",
+      "file": "verifier.py",
+      "line": 167,
+      "symbol": "empty except",
+      "hash": "b3aed7e653b54c2c"
+    },
+    {
+      "rule": "DC001",
+      "file": "verifier.py",
+      "line": 172,
+      "symbol": "empty except",
+      "hash": "b1bb49fa2d027ffd"
+    },
+    {
+      "rule": "dangerous-exec",
+      "file": "verifier.py",
+      "line": 81,
+      "symbol": "exec() executes arbitrary Python code",
+      "hash": "710dc4e3e7479f87"
+    },
+    {
+      "rule": "dangerous-exec",
+      "file": "verifier.py",
+      "line": 91,
+      "symbol": "exec() executes arbitrary Python code",
+      "hash": "7e26ba9511b07152"
+    },
+    {
+      "rule": "dangerous-compile",
+      "file": "verifier.py",
+      "line": 80,
+      "symbol": "compile() can enable code execution",
+      "hash": "17d26ab3bd18d37c"
+    },
+    {
+      "rule": "dangerous-compile",
+      "file": "verifier.py",
+      "line": 90,
+      "symbol": "compile() can enable code execution",
+      "hash": "e1e15159adfad74f"
+    },
+    {
+      "rule": "CMP001",
+      "file": "syntax_healer.py",
+      "line": 221,
+      "symbol": "SyntaxHealer._fix_unindented_blocks (CC=29)",
+      "hash": "16c869d79bdfd3aa"
+    },
+    {
+      "rule": "CMP001",
+      "file": "cli.py",
+      "line": 904,
+      "symbol": "_cmd_fix (CC=26)",
+      "hash": "27050901d9cbb545"
+    },
+    {
+      "rule": "CMP001",
+      "file": "discovery.py",
+      "line": 120,
+      "symbol": "collect_project_python_files (CC=20)",
+      "hash": "3683e97a9079d0fd"
+    },
+    {
+      "rule": "CMP001",
+      "file": "verifier.py",
+      "line": 183,
+      "symbol": "DeterministicInputSynthesizer.generate_for_param (CC=20)",
+      "hash": "d82bb737d4fda799"
+    },
+    {
+      "rule": "CMP001",
+      "file": "verifier.py",
+      "line": 67,
+      "symbol": "_worker_differential_fuzz (CC=19)",
+      "hash": "d6609e6d684e5f66"
+    },
+    {
+      "rule": "CMP001",
+      "file": "cli.py",
+      "line": 667,
+      "symbol": "_accumulate_result (CC=18)",
+      "hash": "98186042e03ccf2e"
+    },
+    {
+      "rule": "CMP001",
+      "file": "dependency_auditor.py",
+      "line": 141,
+      "symbol": "DependencyAuditor.identify_local_modules (CC=18)",
+      "hash": "38da4ed1ad8f9b8c"
+    },
+    {
+      "rule": "CMP001",
+      "file": "pipeline.py",
+      "line": 243,
+      "symbol": "CleanPipeline.process_source (CC=18)",
+      "hash": "666e12bbc1661a24"
+    },
+    {
+      "rule": "CMP001",
+      "file": "cli.py",
+      "line": 1146,
+      "symbol": "_cmd_explain (CC=17)",
+      "hash": "53b0751ee990f85e"
+    },
+    {
+      "rule": "CMP001",
+      "file": "pipeline.py",
+      "line": 368,
+      "symbol": "CleanPipeline.process_file (CC=17)",
+      "hash": "af2edcf376a598a9"
+    },
+    {
+      "rule": "CMP001",
+      "file": "dead_code_detector.py",
+      "line": 630,
+      "symbol": "_DeadCodePrunerCollector._inspect_stmts (CC=15)",
+      "hash": "50cda98b80cfb1e2"
+    },
+    {
+      "rule": "CMP001",
+      "file": "verifier.py",
+      "line": 244,
+      "symbol": "IsolatedDifferentialVerifier._extract_signature_from_source (CC=15)",
+      "hash": "14b077cb6dfc5fd4"
+    },
+    {
+      "rule": "CMP001",
+      "file": "modernizer.py",
+      "line": 172,
+      "symbol": "Modernizer._modernize_singleton_comparisons (CC=14)",
+      "hash": "72305276f4445323"
+    },
+    {
+      "rule": "CMP001",
+      "file": "dependency_auditor.py",
+      "line": 326,
+      "symbol": "DependencyAuditor._update_requirements (CC=13)",
+      "hash": "7f0775da5cf35316"
+    },
+    {
+      "rule": "CMP001",
+      "file": "modernizer.py",
+      "line": 224,
+      "symbol": "Modernizer._modernize_annotations (CC=13)",
+      "hash": "a4d04c7a1d8709a9"
+    },
+    {
+      "rule": "CMP001",
+      "file": "dead_code_detector.py",
+      "line": 106,
+      "symbol": "_DefinitionCollector.visit_Assign (CC=12)",
+      "hash": "1486b81c34c49605"
+    },
+    {
+      "rule": "CMP001",
+      "file": "modernizer.py",
+      "line": 47,
+      "symbol": "_AnnotationTransformer.visit_Subscript (CC=12)",
+      "hash": "0b16f2250f8bdc1f"
+    },
+    {
+      "rule": "CMP001",
+      "file": "dead_code_detector.py",
+      "line": 134,
+      "symbol": "_DefinitionCollector.visit_AnnAssign (CC=11)",
+      "hash": "1c22a71e4e11d63a"
+    },
+    {
+      "rule": "CMP001",
+      "file": "frameworks/plugins.py",
+      "line": 95,
+      "symbol": "PytestPlugin.is_applicable (CC=11)",
+      "hash": "b5a5d51ef45f9a40"
+    },
+    {
+      "rule": "CMP001",
+      "file": "frameworks/plugins.py",
+      "line": 127,
+      "symbol": "PytestPlugin.should_ignore_definition (CC=11)",
+      "hash": "099609b101d3572d"
+    },
+    {
+      "rule": "CMP001",
+      "file": "pipeline.py",
+      "line": 340,
+      "symbol": "CleanPipeline._find_modified_callables (CC=11)",
+      "hash": "6340273d6fd402af"
+    },
+    {
+      "rule": "CMP001",
+      "file": "syntax_healer.py",
+      "line": 142,
+      "symbol": "SyntaxHealer._execute_healing_steps (CC=10)",
+      "hash": "995221b7f50ce789"
+    },
+    {
+      "rule": "CMP001",
+      "file": "verifier.py",
+      "line": 272,
+      "symbol": "IsolatedDifferentialVerifier.verify_transformation (CC=10)",
+      "hash": "5fabea0669628624"
+    },
+    {
+      "rule": "CMP001",
+      "file": "frameworks/plugins.py",
+      "line": 158,
+      "symbol": "FastAPIPlugin.is_applicable (CC=8)",
+      "hash": "98d35dfd5c04e48d"
+    },
+    {
+      "rule": "CMP001",
+      "file": "frameworks/plugins.py",
+      "line": 203,
+      "symbol": "SQLAlchemyPlugin.is_applicable (CC=8)",
+      "hash": "11485450eec635a1"
+    },
+    {
+      "rule": "CMP001",
+      "file": "cli.py",
+      "line": 1066,
+      "symbol": "_cmd_baseline (CC=6)",
+      "hash": "2682322f5c83abfb"
+    },
+    {
+      "rule": "CMP001",
+      "file": "dead_code_detector.py",
+      "line": 717,
+      "symbol": "DeadCodeFixer.fix (CC=6)",
+      "hash": "4c5fc51e864ce144"
+    },
+    {
+      "rule": "CMP001",
+      "file": "frameworks/__init__.py",
+      "line": 71,
+      "symbol": "FrameworkRegistry.is_protected (CC=3)",
+      "hash": "ec92b9da02fd31a1"
+    },
+    {
+      "rule": "CMP001",
+      "file": "cli.py",
+      "line": 348,
+      "symbol": "_add_fix_args (CC=1)",
+      "hash": "56435aa2387bad55"
+    }
+  ]
+}

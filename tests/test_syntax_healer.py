@@ -185,6 +185,36 @@ class TestSyntaxHealer(unittest.TestCase):
         self.assertIn("SyntaxError in example.py", res.diagnostic)
         self.assertIn("^", res.diagnostic)
 
+    def test_combined_python2_defects_fully_healed(self) -> None:
+        code = (
+            "def legacy_parse(value)\n"
+            "\ttry:\n"
+            "\t\treturn int(value\n"
+            "\texcept ValueError, error:\n"
+            '\t\tprint "bad value", error\n'
+            "\t\treturn None\n"
+        )
+        res = self.healer.heal(code)
+        self.assertTrue(res.is_valid)
+        self.assertIn("def legacy_parse(value):", res.code)
+        self.assertIn("except ValueError as error:", res.code)
+        self.assertIn('print("bad value", error)', res.code)
+        self.assertIn("return int(value)", res.code)
+
+    def test_missing_colon_and_unclosed_paren_healed_together(self) -> None:
+        code = "def broken(value)\n    return int(value\n"
+        res = self.healer.heal(code)
+        self.assertTrue(res.is_valid)
+        self.assertIn("def broken(value):", res.code)
+        self.assertIn("return int(value)", res.code)
+
+    def test_partial_repairs_reported_when_unfixable(self) -> None:
+        code = "def foo(x)\n    return x +\n"
+        res = self.healer.heal(code)
+        self.assertFalse(res.is_valid)
+        self.assertTrue(any("missing ':'" in repair for repair in res.repairs))
+        self.assertIn("def foo(x):", res.code)
+
 
 if __name__ == "__main__":
     unittest.main()

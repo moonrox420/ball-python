@@ -301,6 +301,62 @@ class TestCLI(unittest.TestCase):
             exit_code = main(["ultimate", str(folder)])
             self.assertEqual(exit_code, 0)
 
+    def test_config_flag_explicit_file_is_honored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            folder = Path(tmp_dir)
+            target = folder / "custom.py"
+            target.write_text("def needs_colon(x)\n    return x\n", encoding="utf-8")
+            skip_me = folder / "skipme.py"
+            skip_me.write_text("def needs_colon(y)\n    return y\n", encoding="utf-8")
+            explicit = folder / "explicit.toml"
+            explicit.write_text('exclude = ["skipme.py"]\n', encoding="utf-8")
+
+            exit_code = main(["--config", str(explicit), "fix", str(folder)])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("def needs_colon(x):", target.read_text(encoding="utf-8"))
+            self.assertEqual(
+                skip_me.read_text(encoding="utf-8"),
+                "def needs_colon(y)\n    return y\n",
+            )
+
+    def test_config_flag_check_mode_does_not_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            folder = Path(tmp_dir)
+            target = folder / "unformatted.py"
+            original = "def needs_colon(x)\n    return x\n"
+            target.write_text(original, encoding="utf-8")
+            explicit = folder / "explicit.toml"
+            explicit.write_text("backup = false\n", encoding="utf-8")
+
+            exit_code = main(["--config", str(explicit), "check", str(folder)])
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+    def test_config_flag_missing_file_exits_2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            folder = Path(tmp_dir)
+            exit_code = main(
+                ["--config", str(folder / "absent.toml"), "check", str(folder)]
+            )
+            self.assertEqual(exit_code, 2)
+
+    def test_config_flag_unknown_key_exits_2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            folder = Path(tmp_dir)
+            explicit = folder / "bad.toml"
+            explicit.write_text("line-lenght = 88\n", encoding="utf-8")
+            exit_code = main(["--config", str(explicit), "check", str(folder)])
+            self.assertEqual(exit_code, 2)
+
+    def test_subcommand_hook_shows_python_type_and_repo_url(self) -> None:
+        stdout_buf = io.StringIO()
+        with redirect_stdout(stdout_buf):
+            exit_code = main(["hook"])
+        output = stdout_buf.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("types: [python]", output)
+        self.assertIn("https://github.com/moonrox420/ball-python", output)
+
 
 if __name__ == "__main__":
     unittest.main()

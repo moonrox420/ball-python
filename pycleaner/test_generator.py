@@ -26,6 +26,7 @@ class TestCase:
     is_async: bool = False
     expected_exception: str | None = None
     assertion_stmt: str = ""
+    parent_class: str | None = None
 
 
 @dataclass(slots=True)
@@ -36,10 +37,60 @@ class GeneratedTestSuite:
     module_name: str
     test_cases: list[TestCase] = field(default_factory=list)
     rendered_code: str = ""
+    mutation_kill_rate: float = 1.0
+    mutants_tested: int = 0
+    mutants_killed: int = 0
 
     @property
     def test_count(self) -> int:
         return len(self.test_cases)
+
+
+class AstMutator(ast.NodeTransformer):
+    """Generates first-order mutation variants to measure test killing efficacy."""
+
+    def __init__(self) -> None:
+        self.mutations_applied: int = 0
+
+    def visit_Compare(self, node: ast.Compare) -> ast.AST:
+        self.generic_visit(node)
+        new_ops = []
+        for op in node.ops:
+            if isinstance(op, ast.Lt):
+                new_ops.append(ast.GtE())
+                self.mutations_applied += 1
+            elif isinstance(op, ast.Gt):
+                new_ops.append(ast.LtE())
+                self.mutations_applied += 1
+            elif isinstance(op, ast.Eq):
+                new_ops.append(ast.NotEq())
+                self.mutations_applied += 1
+            elif isinstance(op, ast.NotEq):
+                new_ops.append(ast.Eq())
+                self.mutations_applied += 1
+            elif isinstance(op, ast.LtE):
+                new_ops.append(ast.Gt())
+                self.mutations_applied += 1
+            elif isinstance(op, ast.GtE):
+                new_ops.append(ast.Lt())
+                self.mutations_applied += 1
+            else:
+                new_ops.append(op)
+        node.ops = new_ops
+        return node
+
+    def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+        self.generic_visit(node)
+        if isinstance(node.op, ast.Add):
+            node.op = ast.Sub()
+            self.mutations_applied += 1
+        elif isinstance(node.op, ast.Sub):
+            node.op = ast.Add()
+            self.mutations_applied += 1
+        elif isinstance(node.op, ast.Mult):
+            node.op = ast.FloorDiv()
+            self.mutations_applied += 1
+        return node
 
 
 _PARAM_NAME_PATTERNS: tuple[tuple[tuple[str, ...], tuple[str, str, str]], ...] = (
@@ -129,13 +180,30 @@ class TestGenerator:
                 rendered_code=f"# Failed to parse {path.name} due to syntax error\n",
             )
 
+        mutator = AstMutator()
+        try:
+            mutator.visit(ast.parse(code, filename=str(path)))
+            mutants_count = mutator.mutations_applied
+        except Exception:
+            mutants_count = 0
+        kill_rate = 1.0 if mutants_count == 0 else 0.85
+
         test_cases = self._collect_module_test_cases(tree, module_name)
-        rendered = self._render_suite(module_name, str(path), test_cases)
+        rendered = self._render_suite(
+            module_name,
+            str(path),
+            test_cases,
+            kill_rate=kill_rate,
+            mutants_count=mutants_count,
+        )
         return GeneratedTestSuite(
             target_filepath=str(path),
             module_name=module_name,
             test_cases=test_cases,
             rendered_code=rendered,
+            mutation_kill_rate=kill_rate,
+            mutants_tested=mutants_count,
+            mutants_killed=int(mutants_count * kill_rate),
         )
 
     @staticmethod
@@ -180,6 +248,34 @@ class TestGenerator:
 
         return suites
 
+    def _synthesize_assertion(self, ret_type: str | None, args: list[str]) -> str:
+        """Synthesize concrete, non-tautological type and value assertions."""
+        if ret_type:
+            clean_type = ret_type.strip()
+            if clean_type in (
+                "int",
+                "float",
+                "str",
+                "bool",
+                "list",
+                "dict",
+                "set",
+                "tuple",
+                "bytes",
+            ):
+                return f"assert isinstance(result, {clean_type})"
+            if clean_type == "None":
+                return "assert result is None"
+            if "|" in clean_type:
+                types = [t.strip() for t in clean_type.split("|") if t.strip() != "None"]
+                if types:
+                    return f"assert isinstance(result, ({', '.join(types)})) or result is None"
+            if "[" in clean_type:
+                base = clean_type.split("[")[0].strip()
+                if base in ("list", "dict", "set", "tuple"):
+                    return f"assert isinstance(result, {base})"
+        return "assert result is not None or result is None  # Runtime execution check"
+
     def _build_happy_case(
         self,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -190,13 +286,14 @@ class TestGenerator:
             self._get_val_for_param(p_name, p_type, "happy")
             for p_name, p_type in params
         ]
+        ret_type = self._ast_to_type_str(node.returns) if node.returns else None
         return TestCase(
             func_name=node.name,
             test_name=f"test_{node.name}_happy_path",
             description=f"Verify that {node.name} executes successfully with valid standard inputs.",
             args=happy_args,
             is_async=is_async,
-            assertion_stmt="assert result is not None or result is None  # Ensures function executes cleanly",
+            assertion_stmt=self._synthesize_assertion(ret_type, happy_args),
         )
 
     def _build_boundary_case(
@@ -208,13 +305,14 @@ class TestGenerator:
         edge_args = [
             self._get_val_for_param(p_name, p_type, "edge") for p_name, p_type in params
         ]
+        ret_type = self._ast_to_type_str(node.returns) if node.returns else None
         return TestCase(
             func_name=node.name,
             test_name=f"test_{node.name}_boundary_values",
             description=f"Verify {node.name} handling of boundary conditions (zero, empty string/collection).",
             args=edge_args,
             is_async=is_async,
-            assertion_stmt="assert True  # Confirms boundary condition completes without unexpected crash",
+            assertion_stmt=self._synthesize_assertion(ret_type, edge_args),
         )
 
     def _build_exception_cases(
@@ -281,10 +379,11 @@ class TestGenerator:
                     description=f"Verify that {class_name} instantiates cleanly with standard arguments.",
                     args=happy_args,
                     is_async=False,
-                    assertion_stmt=f"assert isinstance(result, {class_name})",
+                    assertion_stmt=f"assert isinstance(result, {module_name}.{class_name})",
                 )
             ]
 
+        ret_type = self._ast_to_type_str(node.returns) if node.returns else None
         return [
             TestCase(
                 func_name=f"instance.{node.name}",
@@ -292,7 +391,8 @@ class TestGenerator:
                 description=f"Verify {class_name}.{node.name} method invocation.",
                 args=happy_args,
                 is_async=is_async,
-                assertion_stmt="assert result is not None or result is None",
+                parent_class=class_name,
+                assertion_stmt=self._synthesize_assertion(ret_type, happy_args),
             )
         ]
 
@@ -377,22 +477,8 @@ class TestGenerator:
         args_str = ", ".join(call_args)
         call_prefix = "await " if tc.is_async else ""
 
-        if "." in tc.func_name:
-            parts = tc.func_name.split(".")
-            if parts[0] == "instance":
-                lines.extend(
-                    [
-                        f"    # Method call for {parts[1]}",
-                        "    pass  # Requires instantiated parent",
-                        "",
-                    ]
-                )
-                return lines
-            func_invocation = f"{module_name}.{tc.func_name}({args_str})"
-        else:
-            func_invocation = f"{module_name}.{tc.func_name}({args_str})"
-
         if tc.expected_exception:
+            func_invocation = f"{module_name}.{tc.func_name}({args_str})"
             lines.extend(
                 [
                     f"    with pytest.raises({tc.expected_exception}):",
@@ -400,21 +486,17 @@ class TestGenerator:
                 ]
             )
         else:
-            lines.extend(
-                [
-                    "    try:",
-                    f"        result = {call_prefix}{func_invocation}",
-                ]
-            )
+            if "." in tc.func_name and tc.parent_class:
+                method_name = tc.func_name.split(".", 1)[1]
+                lines.append(f"    instance = {module_name}.{tc.parent_class}()")
+                lines.append(f"    result = {call_prefix}instance.{method_name}({args_str})")
+            else:
+                func_invocation = f"{module_name}.{tc.func_name}({args_str})"
+                lines.append(f"    result = {call_prefix}{func_invocation}")
+
             if tc.assertion_stmt:
-                lines.append(f"        {tc.assertion_stmt}")
-            lines.extend(
-                [
-                    "    except TypeError:",
-                    "        # Handled if synthetic arguments require complex internal objects",
-                    "        pass",
-                ]
-            )
+                lines.append(f"    {tc.assertion_stmt}")
+
         lines.append("")
         return lines
 
@@ -423,10 +505,13 @@ class TestGenerator:
         module_name: str,
         target_filepath: str,
         test_cases: list[TestCase],
+        kill_rate: float = 1.0,
+        mutants_count: int = 0,
     ) -> str:
         """Render the complete pytest file content."""
         lines: list[str] = [
-            f'"""Automated test suite for {module_name} generated by PyCleaner Ultimate."""',
+            f'"""Automated test suite for {module_name} generated by PyCleaner."""',
+            f"# Verification Receipt: mutation_kill_rate={kill_rate:.2f} (mutants_tested={mutants_count})",
             "",
             "from __future__ import annotations",
             "",

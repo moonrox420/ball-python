@@ -13,11 +13,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pycleaner.cache import ContentAddressableCache
 from pycleaner.dead_code_detector import DeadCodeFixer
 from pycleaner.import_resolver import ImportResolver
 from pycleaner.linter_formatter import LinterFormatter
 from pycleaner.modernizer import Modernizer
 from pycleaner.syntax_healer import SyntaxHealer
+from pycleaner.verifier import (
+    CounterExample,
+    IsolatedDifferentialVerifier,
+    ProofReceipt,
+    VerificationTier,
+)
 
 if TYPE_CHECKING:
     from pycleaner.config import PyCleanerConfig
@@ -41,6 +48,9 @@ class CleanResult:
     format_changed: bool = False
     error: str | None = None
     diagnostics: list[dict[str, str]] = field(default_factory=list)
+    proof_receipts: list[ProofReceipt] = field(default_factory=list)
+    refused_changes: list[CounterExample] = field(default_factory=list)
+    verification_tier: VerificationTier | None = None
 
     @property
     def diff(self) -> str:
@@ -70,6 +80,11 @@ class PipelineOptions:
     enable_lint_fixing: bool = True
     enable_formatting: bool = True
     custom_import_map: dict[str, str] | None = None
+    verify_proofs: bool = False
+    proof_iterations: int = 50
+    proof_seed: int | None = None
+    enable_cache: bool = False
+    cache_db_path: str = ".pycleaner/cache.db"
 
 
 class CleanPipeline:
@@ -89,6 +104,11 @@ class CleanPipeline:
             enable_lint_fixing=kwargs.get("enable_lint_fixing", True),
             enable_formatting=kwargs.get("enable_formatting", True),
             custom_import_map=kwargs.get("custom_import_map"),
+            verify_proofs=kwargs.get("verify_proofs", False),
+            proof_iterations=kwargs.get("proof_iterations", 50),
+            proof_seed=kwargs.get("proof_seed"),
+            enable_cache=kwargs.get("enable_cache", False),
+            cache_db_path=kwargs.get("cache_db_path", ".pycleaner/cache.db"),
         )
         self.enable_syntax_healing = opts.enable_syntax_healing
         self.enable_modernizer = opts.enable_modernizer
@@ -96,7 +116,16 @@ class CleanPipeline:
         self.enable_import_resolution = opts.enable_import_resolution
         self.enable_lint_fixing = opts.enable_lint_fixing
         self.enable_formatting = opts.enable_formatting
+        self.verify_proofs = opts.verify_proofs
+        self.proof_iterations = opts.proof_iterations
+        self.proof_seed = opts.proof_seed
+        self.enable_cache = opts.enable_cache
+        self.cache = ContentAddressableCache(opts.cache_db_path) if opts.enable_cache else None
         self.config = config
+        self.verifier = IsolatedDifferentialVerifier(
+            iterations=self.proof_iterations,
+            base_seed=self.proof_seed,
+        )
 
         import_map = dict(opts.custom_import_map or {})
         custom_map = getattr(config, "custom_import_map", None)
@@ -252,11 +281,46 @@ class CleanPipeline:
                 break
 
         is_valid, final_error = self._validate_syntax(current_code, filename, error_msg)
+
+        proof_receipts: list[ProofReceipt] = []
+        refused_changes: list[CounterExample] = []
+        verification_tier: VerificationTier | None = None
+
+        if self.verify_proofs and current_code != source and is_valid:
+            target_callables = self._find_modified_callables(source, current_code)
+            if not target_callables:
+                verification_tier = VerificationTier.TIER_B_SUGGESTED
+            else:
+                all_proven = True
+                for func_name in target_callables:
+                    receipt = self.verifier.verify_transformation(
+                        filepath=filename,
+                        original_source=source,
+                        transformed_source=current_code,
+                        target_callable=func_name,
+                    )
+                    proof_receipts.append(receipt)
+                    if receipt.tier == VerificationTier.TIER_C_REFUSED:
+                        all_proven = False
+                        if receipt.counterexample:
+                            refused_changes.append(receipt.counterexample)
+                    elif receipt.tier != VerificationTier.TIER_A_PROVEN:
+                        all_proven = False
+
+                if refused_changes:
+                    verification_tier = VerificationTier.TIER_C_REFUSED
+                    # Absolute rollback guarantee on Tier C refusal
+                    current_code = source
+                elif all_proven and proof_receipts:
+                    verification_tier = VerificationTier.TIER_A_PROVEN
+                else:
+                    verification_tier = VerificationTier.TIER_B_SUGGESTED
+
         return CleanResult(
             path=Path(filename),
             original_code=source,
             cleaned_code=current_code,
-            changed=current_code != source,
+            changed=(current_code != source) and (verification_tier != VerificationTier.TIER_C_REFUSED),
             is_valid_python=is_valid,
             syntax_repairs=syntax_repairs,
             modernize_transforms=modernize_transforms,
@@ -267,7 +331,39 @@ class CleanPipeline:
             format_changed=format_changed,
             error=final_error,
             diagnostics=diagnostics,
+            proof_receipts=proof_receipts,
+            refused_changes=refused_changes,
+            verification_tier=verification_tier,
         )
+
+    @staticmethod
+    def _find_modified_callables(orig_code: str, clean_code: str) -> list[str]:
+        """Identify functions/methods whose AST has changed."""
+        try:
+            orig_tree = ast.parse(orig_code)
+            clean_tree = ast.parse(clean_code)
+        except SyntaxError:
+            return []
+
+        orig_funcs: dict[str, str] = {}
+        for node in ast.walk(orig_tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                orig_funcs[node.name] = ast.dump(node)
+
+        modified: list[str] = []
+        clean_funcs: list[str] = []
+        for node in ast.walk(clean_tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                clean_funcs.append(node.name)
+                clean_dump = ast.dump(node)
+                if node.name not in orig_funcs or orig_funcs[node.name] != clean_dump:
+                    if node.name not in modified:
+                        modified.append(node.name)
+
+        if not modified and clean_funcs:
+            return clean_funcs[:3]
+
+        return modified
 
     def process_file(
         self,
@@ -278,9 +374,42 @@ class CleanPipeline:
         """Process a single file on disk and optionally write back updates."""
         path = Path(filepath).resolve()
         content = path.read_text(encoding="utf-8", errors="replace")
+
+        if self.cache is not None:
+            cached_result = self.cache.get(path, content)
+            if cached_result is not None:
+                if (
+                    apply_changes
+                    and cached_result.changed
+                    and cached_result.is_valid_python
+                    and (cached_result.verification_tier != VerificationTier.TIER_C_REFUSED)
+                ):
+                    if backup:
+                        bak_path = path.with_name(path.name + ".pycleaner.bak")
+                        shutil.copy2(path, bak_path)
+                    path.write_text(cached_result.cleaned_code, encoding="utf-8")
+                return cached_result
+
         result = self.process_source(content, filename=str(path))
 
-        if apply_changes and result.changed and result.is_valid_python:
+        if self.cache is not None:
+            self.cache.set(path, content, result)
+            if result.changed and apply_changes:
+                tier_label = result.verification_tier.value if result.verification_tier else "UNVERIFIED"
+                self.cache.record_provenance(
+                    file_path=path,
+                    transformation_type="clean",
+                    verification_tier=tier_label,
+                    seed=self.proof_seed,
+                    diff=result.diff,
+                )
+
+        if (
+            apply_changes
+            and result.changed
+            and result.is_valid_python
+            and (result.verification_tier != VerificationTier.TIER_C_REFUSED)
+        ):
             if backup:
                 bak_path = path.with_name(path.name + ".pycleaner.bak")
                 shutil.copy2(path, bak_path)
@@ -374,6 +503,9 @@ class _StandaloneWorkerTask:
     enable_lint: bool
     enable_format: bool
     custom_import_map: dict[str, str] | None = None
+    verify_proofs: bool = False
+    proof_iterations: int = 50
+    proof_seed: int | None = None
 
 
 def _process_file_standalone(task: _StandaloneWorkerTask) -> CleanResult:
@@ -386,6 +518,9 @@ def _process_file_standalone(task: _StandaloneWorkerTask) -> CleanResult:
         enable_lint_fixing=task.enable_lint,
         enable_formatting=task.enable_format,
         custom_import_map=task.custom_import_map,
+        verify_proofs=task.verify_proofs,
+        proof_iterations=task.proof_iterations,
+        proof_seed=task.proof_seed,
     )
     return pipeline.process_file(
         task.filepath, apply_changes=task.apply_changes, backup=task.backup

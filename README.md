@@ -28,6 +28,7 @@ Zero external LLM dependencies, zero mock modes, and built for deterministic dev
    - Modernizes deprecated syntax via `pyupgrade` (`UP`).
    - Applies deterministic PEP 8 formatting (`ruff format` / `black` / pure-Python formatter).
    - Wraps long `from ... import (...)` statements exceeding configured `line-length`.
+   - Modernizes legacy typing to PEP 585/604 syntax (`List[T]` -> `list[T]`, `Optional[T]` -> `T | None`), singleton comparisons, and `class X(object)` inheritance via `Modernizer` (disable with `--no-modernize`).
 
 4. **Dead Code Detector (`DeadCodeDetector`)**:
    - Builds a cross-file symbol definition and reference graph across a project.
@@ -35,6 +36,7 @@ Zero external LLM dependencies, zero mock modes, and built for deterministic dev
    - Respects public exports in `__all__` and framework decorators (`@app.route`, `@pytest.fixture`, `@abstractmethod`, etc.).
    - Detects unreachable code following unconditional `return`, `raise`, `break`, `continue`, or `sys.exit()`.
    - Identifies empty pass blocks with no comments.
+   - Auto-prunes unreachable code, redundant `pass` statements, and `if False:` branches via `DeadCodeFixer` (enable with `dead-code --fix`, disable in the pipeline with `--no-dead-code`).
 
 5. **Static Security Scanner (`SecurityScanner`)**:
    - Detects dangerous function calls: `eval()`, `exec()`, `compile()`, `pickle.loads()`, `os.system()`, and unsafe `yaml.load()` lacking `SafeLoader`.
@@ -84,12 +86,13 @@ pip install -e ".[dev,security]"
 ### Subcommands
 
 #### `fix` (Default Action)
-Heals syntax, resolves imports, prunes unused imports/variables, fixes lint violations, and formats code:
+Heals syntax, modernizes legacy typing (PEP 585/604), prunes dead code, resolves imports, fixes lint violations, and formats code:
 ```bash
 py -m pycleaner fix src/
 py -m pycleaner fix --diff path/to/script.py
 py -m pycleaner fix --no-backup src/
 py -m pycleaner fix --parallel --workers 4 src/
+py -m pycleaner fix --no-modernize --no-dead-code src/
 ```
 
 #### `check` (Dry-Run CI Verification)
@@ -120,6 +123,7 @@ Finds unused functions, unused classes, empty pass branches, and dead code:
 ```bash
 py -m pycleaner dead-code .
 py -m pycleaner dead-code --json .
+py -m pycleaner dead-code --fix .
 ```
 
 #### `audit` (Project Dependency Verification)
@@ -169,7 +173,7 @@ pycleaner path/to/file.py          # Equivalent to: pycleaner fix path/to/file.p
 
 ## Configuration
 
-`pycleaner` automatically reads configuration from `pyproject.toml` under `[tool.pycleaner]` or from `.pycleaner.toml`.
+`pycleaner` automatically reads configuration from `pyproject.toml` under `[tool.pycleaner]` or from `.pycleaner.toml`. An explicit file can be forced with `pycleaner --config path/to/pyproject.toml <command> ...`, which overrides target-path auto-discovery.
 
 ### `pyproject.toml` Example
 
@@ -275,12 +279,14 @@ for func in violations:
 from pycleaner import DeadCodeDetector
 
 detector = DeadCodeDetector()
-report = detector.analyze_project("src/")
+report = detector.scan_project("src/")
 
-for item in report.unused_symbols:
-    print(f"Unused {item.kind} '{item.name}' at {item.filepath}:{item.lineno}")
+print(f"{report.count} dead code item(s) across {report.files_scanned} file(s).")
 
-for item in report.unreachable_code:
+for item in report.items:
+    print(f"Dead {item.kind} '{item.name}' at {item.filepath}:{item.lineno}")
+
+for item in report.by_kind("unreachable"):
     print(f"Unreachable code at {item.filepath}:{item.lineno} ({item.reason})")
 ```
 

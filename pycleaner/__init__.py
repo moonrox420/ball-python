@@ -20,10 +20,14 @@ from pycleaner.discovery import (
 
 __version__ = "2.0.0"
 __all__ = [
+    "BaselineFingerprint",
+    "BaselineManager",
     "CleanPipeline",
     "CleanResult",
     "ComplexityAnalyzer",
     "ComplexityReport",
+    "ContentAddressableCache",
+    "CounterExample",
     "DeadCodeDetector",
     "DeadCodeFixResult",
     "DeadCodeFixer",
@@ -33,8 +37,11 @@ __all__ = [
     "DependencyAuditor",
     "GeneratedTestSuite",
     "ImportResolver",
+    "IsolatedDifferentialVerifier",
     "LinterFormatter",
+    "ProofReceipt",
     "PyCleanerConfig",
+    "RuleExplanation",
     "SecurityReport",
     "SecurityScanner",
     "SyntaxHealer",
@@ -47,12 +54,18 @@ __all__ = [
     "TypeFinding",
     "TypeReport",
     "TypeshedResolver",
+    "VerificationTier",
+    "get_explanation",
+    "list_rules",
     "load_config",
 ]
 
+from pycleaner.baseline import BaselineFingerprint, BaselineManager
+from pycleaner.cache import ContentAddressableCache
 from pycleaner.complexity_analyzer import ComplexityAnalyzer, ComplexityReport
 from pycleaner.config import PyCleanerConfig, load_config
 from pycleaner.dead_code_detector import DeadCodeDetector, DeadCodeFixResult, DeadCodeFixer, DeadCodeReport
+from pycleaner.explanations import RuleExplanation, get_explanation, list_rules
 from pycleaner.modernizer import ModernizeResult, Modernizer
 from pycleaner.dependency_auditor import DependencyAuditor
 from pycleaner.import_resolver import ImportResolver
@@ -64,3 +77,10 @@ from pycleaner.taint_engine import TaintEngine, TaintFinding, TaintReport
 from pycleaner.test_generator import GeneratedTestSuite, TestCase, TestGenerator
 from pycleaner.type_checker import TypeChecker, TypeFinding, TypeReport
 from pycleaner.typeshed_resolver import TypeshedResolver
+from pycleaner.verifier import (
+    CounterExample,
+    IsolatedDifferentialVerifier,
+    ProofReceipt,
+    VerificationTier,
+)
+

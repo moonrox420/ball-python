@@ -208,9 +208,9 @@ class SyntaxHealer:
         err_msg, lineno, offset = final_error
         diag = self.format_diagnostic(source, filename=filename, error=final_error)
         return SyntaxHealResult(
-            code=source,
+            code=repaired,
             is_valid=False,
-            repairs=[],
+            repairs=repairs,
             error_message=err_msg,
             error_lineno=lineno,
             error_offset=offset,
@@ -525,7 +525,9 @@ class SyntaxHealer:
         try:
             tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
         except tokenize.TokenError:
-            return code, 0
+            tokens = self._tokenize_with_recovered_delimiters(code)
+            if tokens is None:
+                return code, 0
 
         insertions = self._find_missing_colon_insertions(tokens)
         if not insertions:
@@ -539,6 +541,21 @@ class SyntaxHealer:
                 lines[line_idx] = target[:col] + ":" + target[col:]
 
         return "".join(lines), len(insertions)
+
+    def _tokenize_with_recovered_delimiters(
+        self, code: str
+    ) -> list[tokenize.TokenInfo] | None:
+        """Tokenize code that fails tokenization only due to unclosed delimiters."""
+        unclosed = self._scan_unclosed_delimiters(code)
+        if not unclosed:
+            return None
+        closers = "".join(item[0] for item in reversed(unclosed))
+        padded = code if code.endswith("\n") else code + "\n"
+        padded = padded + closers + "\n"
+        try:
+            return list(tokenize.generate_tokens(io.StringIO(padded).readline))
+        except tokenize.TokenError:
+            return None
 
     @staticmethod
     def _is_standalone_assignment(chars: Sequence[str], i: int, depth: int) -> bool:
@@ -649,16 +666,16 @@ class SyntaxHealer:
         return new_code, count
 
     @staticmethod
-    def _scan_unclosed_delimiters(code: str) -> list[str]:
-        stack: list[str] = []
+    def _scan_unclosed_delimiters(code: str) -> list[tuple[str, int, int]]:
+        stack: list[tuple[str, int, int]] = []
         pairs = {"(": ")", "[": "]", "{": "}"}
         closing = {")": "(", "]": "[", "}": "{"}
         try:
             for tok in tokenize.generate_tokens(io.StringIO(code).readline):
                 if tok.type == tokenize.OP:
                     if tok.string in pairs:
-                        stack.append(pairs[tok.string])
-                    elif tok.string in closing and stack and stack[-1] == tok.string:
+                        stack.append((pairs[tok.string], tok.start[0], tok.start[1]))
+                    elif tok.string in closing and stack and stack[-1][0] == tok.string:
                         stack.pop()
         except tokenize.TokenError:
             # Incomplete token stream will be healed by delimiter reconstruction
@@ -686,6 +703,30 @@ class SyntaxHealer:
             lines[-1] = f"{last_line.rstrip()}{closing_str}{ending}"
         return "".join(lines)
 
+    def _append_delimiters_to_line(
+        self, code: str, lineno: int, closing_str: str
+    ) -> str:
+        """Append closing delimiters at the end of a specific 1-based line."""
+        lines = code.splitlines(keepends=True)
+        if not 1 <= lineno <= len(lines):
+            return code
+
+        target_line = lines[lineno - 1]
+        comment_idx = target_line.find("#")
+        if comment_idx != -1:
+            pre = target_line[:comment_idx].rstrip()
+            post = target_line[comment_idx:]
+            lines[lineno - 1] = f"{pre}{closing_str} {post}"
+            return "".join(lines)
+
+        ending = (
+            "\r\n"
+            if target_line.endswith("\r\n")
+            else ("\n" if target_line.endswith("\n") else "")
+        )
+        lines[lineno - 1] = f"{target_line.rstrip()}{closing_str}{ending}"
+        return "".join(lines)
+
     def _fix_unbalanced_delimiters(
         self, code: str, filename: str = "<unknown>"
     ) -> tuple[str, list[str]]:
@@ -694,9 +735,18 @@ class SyntaxHealer:
         if not stack:
             return code, []
 
-        closing_str = "".join(reversed(stack))
+        closing_str = "".join(item[0] for item in reversed(stack))
         candidate = self._append_delimiters_to_last_line(code, closing_str)
         if self._check_syntax(candidate, filename) is None:
             return candidate, [f"Closed unclosed delimiter(s): {closing_str}"]
+
+        inline_candidate = self._append_delimiters_to_line(
+            code, stack[-1][1], closing_str
+        )
+        if (
+            inline_candidate != code
+            and self._check_syntax(inline_candidate, filename) is None
+        ):
+            return inline_candidate, [f"Closed unclosed delimiter(s): {closing_str}"]
 
         return code, []

@@ -8,6 +8,7 @@ unreachable code after return/raise/break/continue, and empty pass branches.
 from __future__ import annotations
 
 from pycleaner.discovery import collect_project_python_files
+from pycleaner.frameworks import FrameworkRegistry, get_default_registry
 
 import ast
 import os
@@ -48,14 +49,30 @@ class DeadCodeReport:
 class _DefinitionCollector(ast.NodeVisitor):
     """Collects all function and class definitions with their line numbers."""
 
-    def __init__(self, filepath: str) -> None:
+    def __init__(
+        self,
+        filepath: str,
+        tree: ast.AST | None = None,
+        registry: FrameworkRegistry | None = None,
+    ) -> None:
         self.filepath = filepath
+        self.tree = tree
+        self.registry = registry or get_default_registry()
         self.definitions: list[tuple[str, str, int, int | None, str]] = []
         # (name, kind, lineno, end_lineno, scope_context)
         self._scope_stack: list[str] = []
+        self._class_stack: list[ast.ClassDef] = []
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         context = ".".join(self._scope_stack) if self._scope_stack else "<module>"
+        if self.tree is not None and self.registry.is_protected(
+            node.name, "function", node, context, self.tree, self.filepath
+        ):
+            self._scope_stack.append(node.name)
+            self.generic_visit(node)
+            self._scope_stack.pop()
+            return
+
         self.definitions.append(
             (node.name, "function", node.lineno, node.end_lineno, context)
         )
@@ -67,14 +84,33 @@ class _DefinitionCollector(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         context = ".".join(self._scope_stack) if self._scope_stack else "<module>"
+        if self.tree is not None and self.registry.is_protected(
+            node.name, "class", node, context, self.tree, self.filepath
+        ):
+            self._scope_stack.append(node.name)
+            self._class_stack.append(node)
+            self.generic_visit(node)
+            self._class_stack.pop()
+            self._scope_stack.pop()
+            return
+
         self.definitions.append(
             (node.name, "class", node.lineno, node.end_lineno, context)
         )
         self._scope_stack.append(node.name)
+        self._class_stack.append(node)
         self.generic_visit(node)
+        self._class_stack.pop()
         self._scope_stack.pop()
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        if self._class_stack and self.tree is not None:
+            if self.registry.is_field_protected(
+                node, self._class_stack[-1], self.tree, self.filepath
+            ):
+                self.generic_visit(node)
+                return
+
         # Module-level constants or class attributes (not local function variables)
         if not self._scope_stack or len(self._scope_stack) == 1:
             for target in node.targets:
@@ -86,12 +122,23 @@ class _DefinitionCollector(ast.NodeVisitor):
                             if self._scope_stack
                             else "<module>"
                         )
+                        if self.tree is not None and self.registry.is_protected(
+                            name, "variable", node, context, self.tree, self.filepath
+                        ):
+                            continue
                         self.definitions.append(
                             (name, "variable", node.lineno, node.end_lineno, context)
                         )
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if self._class_stack and self.tree is not None:
+            if self.registry.is_field_protected(
+                node, self._class_stack[-1], self.tree, self.filepath
+            ):
+                self.generic_visit(node)
+                return
+
         if (not self._scope_stack or len(self._scope_stack) == 1) and isinstance(
             node.target, ast.Name
         ):
@@ -100,6 +147,11 @@ class _DefinitionCollector(ast.NodeVisitor):
                 context = (
                     ".".join(self._scope_stack) if self._scope_stack else "<module>"
                 )
+                if self.tree is not None and self.registry.is_protected(
+                    name, "variable", node, context, self.tree, self.filepath
+                ):
+                    self.generic_visit(node)
+                    return
                 self.definitions.append(
                     (name, "variable", node.lineno, node.end_lineno, context)
                 )
@@ -271,6 +323,7 @@ class _ProjectScanState:
     exports: set[str] = field(default_factory=set)
     decorated: set[str] = field(default_factory=set)
     unreachable: list[DeadCodeItem] = field(default_factory=list)
+    framework_registry: FrameworkRegistry = field(default_factory=get_default_registry)
 
     def process_file(self, py_file: Path) -> None:
         try:
@@ -280,7 +333,9 @@ class _ProjectScanState:
             return
 
         filepath_str = str(py_file)
-        def_collector = _DefinitionCollector(filepath_str)
+        def_collector = _DefinitionCollector(
+            filepath_str, tree=tree, registry=self.framework_registry
+        )
         def_collector.visit(tree)
         for name, kind, lineno, end_lineno, ctx in def_collector.definitions:
             self.definitions.append((filepath_str, name, kind, lineno, end_lineno, ctx))
@@ -420,9 +475,16 @@ class DeadCodeDetector:
         self,
         ignore_decorators: set[str] | None = None,
         ignore_names: set[str] | None = None,
+        framework_registry: FrameworkRegistry | None = None,
     ) -> None:
-        self.ignore_decorators = (ignore_decorators or set()) | set(
-            self.FRAMEWORK_DECORATORS
+        self.framework_registry = framework_registry or get_default_registry()
+        extra_decorators: set[str] = set()
+        for p in self.framework_registry.plugins:
+            extra_decorators.update(p.get_protected_decorators())
+        self.ignore_decorators = (
+            (ignore_decorators or set())
+            | set(self.FRAMEWORK_DECORATORS)
+            | extra_decorators
         )
         self.ignore_names = ignore_names or set()
 
@@ -431,7 +493,7 @@ class DeadCodeDetector:
         root = Path(root_dir).resolve()
         py_files = self._discover_files(root)
 
-        state = _ProjectScanState()
+        state = _ProjectScanState(framework_registry=self.framework_registry)
         for py_file in py_files:
             state.process_file(py_file)
 

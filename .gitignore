@@ -27,6 +27,7 @@ GEMINI.md
 CODE_QUALITY.md
 docs/
 pycleaner.egg-info/
+.pycleaner/cache.db*
+.pycleaner/*.bak
+.pycleaner/verification-report.json
 ballpython.egg-info/
-
-

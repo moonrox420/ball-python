@@ -37,6 +37,10 @@ pycleaner = "pycleaner.cli:main"
 where = ["."]
 include = ["ballpython*", "pycleaner*"]
 
+[tool.setuptools.package-data]
+pycleaner = ["py.typed"]
+ballpython = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
