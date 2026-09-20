@@ -13,7 +13,9 @@ Performs AST-driven modernization:
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
 from dataclasses import dataclass, field
 
 
@@ -227,15 +229,35 @@ class Modernizer:
         return "".join(lines), transforms
 
     def _prune_unicode_prefixes(self, source: str) -> tuple[str, list[str]]:
-        transforms: list[str] = []
-        quote_chars = chr(34) + chr(39)
-        sub_pattern = re.compile(r"\bu([" + quote_chars + "])")
-        if sub_pattern.search(source):
-            new_source = sub_pattern.sub(r"\1", source)
-            if new_source != source:
-                transforms.append("Pruned obsolete '' unicode string prefixes")
-                return new_source, transforms
-        return source, []
+        try:
+            tokens = list(
+                tokenize.tokenize(io.BytesIO(source.encode("utf-8")).readline)
+            )
+        except tokenize.TokenError:
+            return source, []
+
+        edits: list[tuple[int, int, int, int]] = []
+        for tok in tokens:
+            if tok.type == tokenize.STRING:
+                if tok.string.startswith(
+                    ('u"', "u'", 'u"""', "u'''", 'U"', "U'", 'U"""', "U'''")
+                ):
+                    s_line, s_col = tok.start
+                    edits.append((s_line, s_col, s_line, s_col + 1))
+
+        if not edits:
+            return source, []
+
+        lines = source.splitlines(keepends=True)
+        edits.sort(key=lambda e: (e[0], e[1]), reverse=True)
+        for s_line, s_col, _e_line, e_col in edits:
+            idx = s_line - 1
+            if 0 <= idx < len(lines):
+                line = lines[idx]
+                lines[idx] = line[:s_col] + line[e_col:]
+
+        new_source = "".join(lines)
+        return new_source, ["Pruned obsolete unicode literal prefixes"]
 
     def _modernize_annotations(self, source: str) -> tuple[str, list[str]]:
         try:
@@ -316,7 +338,7 @@ class Modernizer:
             ):
                 insert_idx = getattr(tree.body[0], "end_lineno", 1)
         except SyntaxError:
-            pass
+            pass  # Fall back to default index if docstring extraction fails
 
         future_stmt = "from __future__ import annotations\n\n"
         if insert_idx < len(lines):

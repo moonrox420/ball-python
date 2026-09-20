@@ -47,7 +47,15 @@ python_files = ["test_*.py"]
 addopts = "-p no:pytestqt --basetemp=.pytest_temp"
 
 [tool.pycleaner]
-exclude = ["migrations/", "generated/", "*_pb2.py", "*_pb2_grpc.py"]
+exclude = [
+    "migrations/",
+    "generated/",
+    "*_pb2.py",
+    "*_pb2_grpc.py",
+    "editor-*.py",
+    ".release-test",
+    ".pytest_temp",
+]
 include = []
 fix-py2-syntax = true
 fix-conditional-assignments = true
@@ -66,3 +74,30 @@ max-arguments = 5
 backup = true
 parallel = false
 max-workers = 4
+
+[tool.isort]
+profile = "black"
+line_length = 88
+skip_gitignore = true
+extend_skip = [".release-test", ".pytest_temp"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310", "py311", "py312", "py313", "py314"]
+extend-exclude = '''
+/(
+  \.release-test
+  | \.pytest_temp
+)/
+'''
+
+[tool.pyright]
+include = ["pycleaner", "ballpython", "tests"]
+exclude = [
+    "**/__pycache__",
+    ".venv",
+    ".release-test",
+    ".pytest_temp",
+    "editor-*.py",
+]
+

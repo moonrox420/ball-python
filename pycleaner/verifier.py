@@ -78,7 +78,7 @@ def _worker_differential_fuzz(
         }
 
         try:
-            orig_code = compile(orig_source, "<orig_sandbox>", "exec")
+            orig_code = compile(orig_source, "<orig_sandbox>", "exec")  # nosec: B102 - intentionally isolated in worker process
             exec(orig_code, orig_ns)  # nosec: B102 - intentionally isolated in worker process
         except BaseException as e:
             conn.send(
@@ -90,7 +90,7 @@ def _worker_differential_fuzz(
             return
 
         try:
-            trans_code = compile(trans_source, "<trans_sandbox>", "exec")
+            trans_code = compile(trans_source, "<trans_sandbox>", "exec")  # nosec: B102 - intentionally isolated in worker process
             exec(trans_code, trans_ns)  # nosec: B102 - intentionally isolated in worker process
         except BaseException as e:
             conn.send(
@@ -178,12 +178,12 @@ def _worker_differential_fuzz(
                 }
             )
         except Exception:
-            pass
+            pass  # Suppress secondary exceptions if IPC pipe fails to send crash reason
     finally:
         try:
             conn.close()
         except Exception:
-            pass
+            pass  # Best-effort resource cleanup for IPC connection
 
 
 class DeterministicInputSynthesizer:

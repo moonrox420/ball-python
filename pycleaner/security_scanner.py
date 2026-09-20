@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -195,6 +196,35 @@ class _DangerousCallDetector(ast.NodeVisitor):
             return self.source_lines[lineno - 1].strip()
         return ""
 
+    def _is_suppressed(self, lineno: int, category: str) -> bool:
+        if 1 <= lineno <= len(self.source_lines):
+            line = self.source_lines[lineno - 1]
+            if "#" in line:
+                comment = line.split("#", 1)[1].strip().lower()
+                if (
+                    "nosec" in comment
+                    or "noqa" in comment
+                    or "pycleaner: ignore" in comment
+                    or f"ignore[{category.lower()}]" in comment
+                ):
+                    return True
+            if lineno > 1:
+                prev_line = self.source_lines[lineno - 2]
+                if prev_line.strip().startswith("#"):
+                    prev_comment = prev_line.strip().lstrip("#").strip().lower()
+                    if (
+                        "nosec" in prev_comment
+                        or "noqa" in prev_comment
+                        or "pycleaner: ignore" in prev_comment
+                        or f"ignore[{category.lower()}]" in prev_comment
+                    ):
+                        return True
+        return False
+
+    def _add_finding(self, finding: SecurityFinding) -> None:
+        if not self._is_suppressed(finding.lineno, finding.category):
+            self.findings.append(finding)
+
     def visit_Call(self, node: ast.Call) -> None:
         func_name = self._get_call_name(node)
         if func_name:
@@ -213,7 +243,7 @@ class _DangerousCallDetector(ast.NodeVisitor):
     def visit_Assert(self, node: ast.Assert) -> None:
         if self._is_test_path(self.filepath):
             return
-        self.findings.append(
+        self._add_finding(
             SecurityFinding(
                 filepath=self.filepath,
                 lineno=node.lineno,
@@ -251,7 +281,7 @@ class _DangerousCallDetector(ast.NodeVisitor):
         spec = _DANGEROUS_CALL_SPECS.get(func_name)
         if spec:
             severity, category, msg, suggestion = spec
-            self.findings.append(
+            self._add_finding(
                 SecurityFinding(
                     filepath=self.filepath,
                     lineno=node.lineno,
@@ -281,7 +311,7 @@ class _DangerousCallDetector(ast.NodeVisitor):
                 and isinstance(kw.value, ast.Constant)
                 and kw.value.value is True
             ):
-                self.findings.append(
+                self._add_finding(
                     SecurityFinding(
                         filepath=self.filepath,
                         lineno=node.lineno,
@@ -320,7 +350,7 @@ class _DangerousCallDetector(ast.NodeVisitor):
                     and isinstance(kw.value, ast.Constant)
                     and kw.value.value is False
                 ):
-                    self.findings.append(
+                    self._add_finding(
                         SecurityFinding(
                             filepath=self.filepath,
                             lineno=node.lineno,
@@ -341,7 +371,7 @@ class _DangerousCallDetector(ast.NodeVisitor):
                     and isinstance(kw.value, ast.Constant)
                     and kw.value.value is True
                 ):
-                    self.findings.append(
+                    self._add_finding(
                         SecurityFinding(
                             filepath=self.filepath,
                             lineno=node.lineno,
@@ -374,7 +404,7 @@ class _DangerousCallDetector(ast.NodeVisitor):
                 ):
                     has_safe_loader = True
             if not has_safe_loader and func_name == "yaml.load":
-                self.findings.append(
+                self._add_finding(
                     SecurityFinding(
                         filepath=self.filepath,
                         lineno=node.lineno,
@@ -408,7 +438,7 @@ class _DangerousCallDetector(ast.NodeVisitor):
             return
 
         if self._is_dynamic_sql_arg(node.args[0]):
-            self.findings.append(
+            self._add_finding(
                 SecurityFinding(
                     filepath=self.filepath,
                     lineno=node.lineno,
@@ -424,23 +454,6 @@ class _DangerousCallDetector(ast.NodeVisitor):
 
 class SecurityScanner:
     """Scans Python source code for security vulnerabilities."""
-
-    IGNORE_DIRS = frozenset(
-        {
-            ".git",
-            ".venv",
-            "venv",
-            "env",
-            "__pycache__",
-            "build",
-            "dist",
-            ".tox",
-            ".mypy_cache",
-            ".pytest_cache",
-            ".ruff_cache",
-            "site-packages",
-        }
-    )
 
     def __init__(
         self,
@@ -480,13 +493,19 @@ class SecurityScanner:
 
         return SecurityReport(findings=filtered, files_scanned=1)
 
-    def _discover_project_py_files(self, root: Path) -> list[Path]:
-        return collect_project_python_files(root)
+    def _discover_project_py_files(
+        self, root: Path, exclude_patterns: Sequence[str] = ()
+    ) -> list[Path]:
+        return collect_project_python_files(root, exclude_patterns=exclude_patterns)
 
-    def scan_project(self, root_dir: Path | str) -> SecurityReport:
+    def scan_project(
+        self, root_dir: Path | str, exclude_patterns: Sequence[str] = ()
+    ) -> SecurityReport:
         """Scan all Python files in a project for security issues."""
         root = Path(root_dir).resolve()
-        py_files = self._discover_project_py_files(root)
+        py_files = self._discover_project_py_files(
+            root, exclude_patterns=exclude_patterns
+        )
         all_findings: list[SecurityFinding] = []
 
         for fpath in py_files:
@@ -525,6 +544,15 @@ class SecurityScanner:
                 filename, stripped.lower()
             ):
                 continue
+            if "#" in line:
+                comment = line.split("#", 1)[1].strip().lower()
+                if (
+                    "nosec" in comment
+                    or "noqa" in comment
+                    or "pycleaner: ignore" in comment
+                    or "ignore[hardcoded-secret]" in comment
+                ):
+                    continue
 
             for name, pattern, suggestion in _SECRET_PATTERNS:
                 if pattern.search(line):

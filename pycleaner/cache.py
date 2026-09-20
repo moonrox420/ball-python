@@ -46,7 +46,7 @@ def extract_file_dependencies(source: str) -> list[str]:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 deps.append(node.module.split(".")[0])
     except SyntaxError:
-        pass
+        pass  # Best-effort dependency extraction; syntax errors handled downstream
     return sorted(set(deps))
 
 
@@ -70,8 +70,7 @@ class ContentAddressableCache:
 
     def _init_db(self) -> None:
         with self._get_connection() as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS file_cache (
                     content_hash TEXT PRIMARY KEY,
                     file_path TEXT NOT NULL,
@@ -91,16 +90,12 @@ class ContentAddressableCache:
                     dependencies TEXT NOT NULL,
                     updated_at REAL NOT NULL
                 );
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_file_cache_path
                 ON file_cache (file_path);
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS provenance_ledger (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT NOT NULL,
@@ -110,14 +105,11 @@ class ContentAddressableCache:
                     seed INTEGER,
                     diff TEXT NOT NULL
                 );
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_provenance_path
                 ON provenance_ledger (file_path);
-                """
-            )
+                """)
             conn.commit()
 
     def get(

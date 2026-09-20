@@ -9,6 +9,7 @@ and performs type narrowing across conditional branches.
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -422,23 +423,6 @@ class _FileContext:
 class TypeChecker:
     """Type checker verifying annotations, return statements, and call sites."""
 
-    IGNORE_DIRS: frozenset[str] = frozenset(
-        {
-            ".git",
-            ".venv",
-            "venv",
-            "env",
-            "__pycache__",
-            "build",
-            "dist",
-            ".tox",
-            ".mypy_cache",
-            ".pytest_cache",
-            ".ruff_cache",
-            "site-packages",
-        }
-    )
-
     def __init__(
         self, typeshed: TypeshedResolver | None = None, strict: bool = False
     ) -> None:
@@ -499,8 +483,10 @@ class TypeChecker:
 
         return findings
 
-    def _discover_python_files(self, root: Path) -> list[Path]:
-        return collect_project_python_files(root)
+    def _discover_python_files(
+        self, root: Path, exclude_patterns: Sequence[str] = ()
+    ) -> list[Path]:
+        return collect_project_python_files(root, exclude_patterns=exclude_patterns)
 
     @staticmethod
     def _count_functions(fpath: Path) -> int:
@@ -514,12 +500,14 @@ class TypeChecker:
         except SyntaxError:
             return 0
 
-    def check_project(self, root_dir: str | Path) -> TypeReport:
+    def check_project(
+        self, root_dir: str | Path, exclude_patterns: Sequence[str] = ()
+    ) -> TypeReport:
         """Type-check all Python files across an entire project directory."""
         root = Path(root_dir).resolve()
         findings: list[TypeFinding] = []
         functions_checked = 0
-        py_files = self._discover_python_files(root)
+        py_files = self._discover_python_files(root, exclude_patterns=exclude_patterns)
 
         for fpath in py_files:
             findings.extend(self.check_file(fpath))
@@ -687,11 +675,29 @@ class TypeChecker:
     ) -> tuple[str, dict[str, PyType]]:
         """Resolve function name and parameter types for a Call node."""
         func_name, dotted_name = self._resolve_call_names(call)
-        if func_name in local_functions:
+        if isinstance(call.func, ast.Name) and func_name in local_functions:
             cleaned = self._clean_receiver_params(
                 dict(local_functions[func_name][0]), call
             )
             return func_name, cleaned
+
+        if isinstance(call.func, ast.Attribute):
+            if (
+                isinstance(call.func.value, ast.Call)
+                and getattr(call.func.value.func, "id", None) == "super"
+            ):
+                return func_name, {}
+            if isinstance(call.func.value, ast.Name) and call.func.value.id in (
+                "self",
+                "cls",
+            ):
+                if func_name in local_functions:
+                    params = dict(local_functions[func_name][0])
+                    first_p = next(iter(params), None)
+                    if first_p in ("self", "cls"):
+                        cleaned = self._clean_receiver_params(params, call)
+                        return func_name, cleaned
+                return func_name, {}
 
         target_lookup = dotted_name or func_name
         if not target_lookup:

@@ -84,6 +84,28 @@ def is_protected_file(path: Path | str) -> bool:
     return False
 
 
+def find_project_root(path: Path | str | None = None) -> Path:
+    """
+    Find the project root containing pyproject.toml, setup.py, requirements.txt, or .git.
+    Traverses upwards from the given path (or current working directory).
+    """
+    start = Path(path).resolve() if path else Path.cwd()
+    if start.is_file():
+        start = start.parent
+
+    for candidate in [start, *start.parents]:
+        if (
+            (candidate / "pyproject.toml").is_file()
+            or (candidate / "setup.py").is_file()
+            or (candidate / "setup.cfg").is_file()
+            or (candidate / "requirements.txt").is_file()
+            or (candidate / ".git").is_dir()
+        ):
+            return candidate
+
+    return start
+
+
 def load_gitignore_patterns(project_root: Path) -> list[str]:
     """Parse .gitignore rules from the project root if present."""
     gitignore_file = project_root / ".gitignore"
@@ -169,9 +191,12 @@ def collect_project_python_files(
 
             if exclude_patterns:
                 rel_posix = Path(rel_path).as_posix()
+                rel_parts = Path(rel_path).parts
                 if any(
                     fnmatch.fnmatch(rel_posix, pat)
                     or fnmatch.fnmatch(rel_posix, f"*/{pat}")
+                    or fnmatch.fnmatch(fname, pat)
+                    or pat.rstrip("/\\") in rel_parts
                     for pat in exclude_patterns
                 ):
                     continue

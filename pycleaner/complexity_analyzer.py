@@ -9,6 +9,7 @@ and maximum nesting depth.
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -329,23 +330,6 @@ class _NestingDepthCounter(ast.NodeVisitor):
 class ComplexityAnalyzer:
     """Analyzes per-function complexity metrics across Python source files."""
 
-    IGNORE_DIRS = frozenset(
-        {
-            ".git",
-            ".venv",
-            "venv",
-            "env",
-            "__pycache__",
-            "build",
-            "dist",
-            ".tox",
-            ".mypy_cache",
-            ".pytest_cache",
-            ".ruff_cache",
-            "site-packages",
-        }
-    )
-
     def analyze_source(
         self, source: str, filename: str = "<unknown>"
     ) -> ComplexityReport:
@@ -370,13 +354,17 @@ class ComplexityAnalyzer:
         except OSError:
             return None
 
-    def analyze_project(self, root_dir: Path | str) -> ComplexityReport:
+    def analyze_project(
+        self, root_dir: Path | str, exclude_patterns: Sequence[str] = ()
+    ) -> ComplexityReport:
         """Analyze complexity across all Python files in a project."""
         root = Path(root_dir).resolve()
         all_functions: list[ComplexityMetrics] = []
         files_scanned = 0
 
-        for fpath in collect_project_python_files(root):
+        for fpath in collect_project_python_files(
+            root, exclude_patterns=exclude_patterns
+        ):
             try:
                 content = fpath.read_text(encoding="utf-8", errors="replace")
                 metrics = self.analyze_source(content, filename=str(fpath)).functions

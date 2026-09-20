@@ -10,6 +10,7 @@ SQL Injection, Path Traversal, SSRF, Deserialization).
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
@@ -261,13 +262,17 @@ class TaintEngine:
     def __init__(self) -> None:
         self.function_summaries: dict[str, FunctionTaintSummary] = {}
 
-    def scan_path(self, target: str | Path) -> TaintReport:
+    def scan_path(
+        self, target: str | Path, exclude_patterns: Sequence[str] = ()
+    ) -> TaintReport:
         """Scan a file or directory for dataflow taint vulnerabilities."""
         path = Path(target)
         if path.is_file():
             files = [path] if path.suffix == ".py" else []
         elif path.is_dir():
-            files = collect_project_python_files(path)
+            files = collect_project_python_files(
+                path, exclude_patterns=exclude_patterns
+            )
         else:
             return TaintReport()
 

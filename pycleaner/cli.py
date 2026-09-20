@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from pycleaner.baseline import BaselineFingerprint, BaselineManager
+from pycleaner.cache import ContentAddressableCache
 from pycleaner.complexity_analyzer import ComplexityAnalyzer
 from pycleaner.config import ConfigError, PyCleanerConfig, load_config
 from pycleaner.dead_code_detector import DeadCodeDetector
@@ -26,6 +27,7 @@ from pycleaner.dependency_auditor import DependencyAuditor, DependencyAuditRepor
 from pycleaner.discovery import (
     DEFAULT_IGNORED_DIRS,
     collect_project_python_files,
+    find_project_root,
     is_protected_file,
 )
 from pycleaner.explanations import get_explanation, list_rules
@@ -71,6 +73,8 @@ SUBCOMMANDS = {
     "ultimate",
     "baseline",
     "explain",
+    "cache",
+    "help",
 }
 
 _OPTIONS_WITH_VALUE = {
@@ -252,6 +256,43 @@ def _register_tool_subparsers(subparsers: Any) -> None:
         nargs="?",
         default=None,
         help="Diagnostic rule code or topic to explain (e.g. DC001, SEC001, PROVE001, or omit to list all)",
+    )
+
+    help_p = subparsers.add_parser(
+        "help",
+        help="Show help for ballpython or a specific command",
+    )
+    help_p.add_argument(
+        "command_name",
+        nargs="?",
+        default=None,
+        metavar="COMMAND",
+        help="Subcommand to show help for (e.g. fix, prove, check)",
+    )
+
+    cache_p = subparsers.add_parser(
+        "cache",
+        help="Inspect, query statistics, or invalidate content-addressable cache",
+    )
+    cache_p.add_argument(
+        "--stats",
+        action="store_true",
+        help="Display cache utilization and database storage statistics",
+    )
+    cache_p.add_argument(
+        "--clear",
+        action="store_true",
+        help="Wipe all entries from the local cache database",
+    )
+    cache_p.add_argument(
+        "--db",
+        default=None,
+        help="Custom path to cache SQLite database file (default: .pycleaner/cache.db)",
+    )
+    cache_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Output statistics in JSON format",
     )
 
 
@@ -478,12 +519,27 @@ def discover_python_files(
     resolved_root = (
         root if root is not None else _resolve_project_root(effective_targets)
     )
-    files = _collect_target_files(effective_targets)
 
-    if config and config.exclude:
-        files = [
-            f for f in files if not _is_file_excluded(f, resolved_root, config.exclude)
-        ]
+    explicit_files: list[Path] = []
+    dir_targets: list[str] = []
+    for target in effective_targets:
+        p = Path(target).resolve()
+        if p.is_file():
+            if p.suffix == ".py" and not is_protected_file(p):
+                explicit_files.append(p)
+        elif p.is_dir():
+            dir_targets.append(str(p))
+
+    files = list(explicit_files)
+    if dir_targets:
+        dir_files = _collect_target_files(dir_targets)
+        if config and config.exclude:
+            dir_files = [
+                f
+                for f in dir_files
+                if not _is_file_excluded(f, resolved_root, config.exclude)
+            ]
+        files.extend(dir_files)
 
     return sorted(set(files))
 
@@ -547,6 +603,7 @@ def _route_command(
     diff = getattr(args, "diff", False)
 
     dispatch_simple = {
+        "help": lambda: _cmd_help(args, print_msg),
         "hook": lambda: _cmd_hook(args, print_msg),
         "audit": lambda: _cmd_audit(args, config, print_msg),
         "scan": lambda: _cmd_scan(args, config, print_msg, console),
@@ -561,6 +618,7 @@ def _route_command(
         "prove": lambda: _cmd_prove(args, config, print_msg, console),
         "baseline": lambda: _cmd_baseline(args, config, print_msg, console),
         "explain": lambda: _cmd_explain(args, print_msg, console),
+        "cache": lambda: _cmd_cache(args, config, print_msg, console),
         "check": lambda: _cmd_fix(
             args,
             config,
@@ -599,7 +657,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     targets = getattr(args, "paths", ["."])
     target_path = Path(targets[0]).resolve() if targets else Path.cwd()
-    root_dir = target_path if target_path.is_dir() else target_path.parent
+    root_dir = find_project_root(target_path)
 
     try:
         config = load_config(
@@ -856,13 +914,18 @@ def _run_fix_audit(
     apply_changes: bool,
     args: argparse.Namespace,
     print_msg: Any,
+    config: PyCleanerConfig | None = None,
+    target_files: Sequence[Path] | None = None,
 ) -> DependencyAuditReport:
-    auditor = DependencyAuditor(root_dir)
+    exclude_patterns = config.exclude if config else ()
+    auditor = DependencyAuditor(root_dir, exclude_patterns=exclude_patterns)
     fix_any = getattr(args, "fix_deps", False) or getattr(args, "fix_all", False)
     prune_any = getattr(args, "prune_deps", False) or getattr(args, "fix_all", False)
     should_fix = apply_changes and fix_any
     should_prune = apply_changes and prune_any
-    audit_report = auditor.audit(fix=should_fix, prune_unused=should_prune)
+    audit_report = auditor.audit(
+        fix=should_fix, prune_unused=should_prune, target_files=target_files
+    )
     _render_audit_terminal_output(audit_report, print_msg, should_fix)
     return audit_report
 
@@ -900,7 +963,7 @@ def _is_parallel_enabled(
 
 def _resolve_root_dir(paths: Sequence[str] | None) -> Path:
     target = Path(paths[0]).resolve() if paths else Path.cwd()
-    return target if target.is_dir() else target.parent
+    return find_project_root(target)
 
 
 def _report_fix_start(count: int, apply_changes: bool, print_msg: Any) -> None:
@@ -939,7 +1002,14 @@ def _cmd_fix(
         print(json.dumps(state.diagnostics, indent=2))
         return 0 if state.error_count == 0 else 1
 
-    audit_report = _run_fix_audit(root_dir, opts.apply_changes, args, print_msg)
+    audit_report = _run_fix_audit(
+        root_dir,
+        opts.apply_changes,
+        args,
+        print_msg,
+        config=config,
+        target_files=py_files,
+    )
     print_msg(
         f"\n[bold]Summary: {len(py_files)} inspected, {state.changed_count} updated, {state.error_count} errors.[/bold]"
     )
@@ -1259,6 +1329,55 @@ def _cmd_explain(
     return 0
 
 
+def _cmd_help(args: argparse.Namespace, print_msg: Any) -> int:
+    cmd_name = getattr(args, "command_name", None)
+    parser = build_parser()
+    if not cmd_name:
+        parser.print_help()
+        return 0
+
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            if cmd_name in action.choices:
+                action.choices[cmd_name].print_help()
+                return 0
+    print_msg(
+        f"Unknown command: '{cmd_name}'. Run 'ballpython --help' to view available commands.",
+        style="yellow",
+    )
+    return 1
+
+
+def _cmd_cache(
+    args: argparse.Namespace,
+    config: PyCleanerConfig,
+    print_msg: Any,
+    console: Any,
+) -> int:
+    """Manage and inspect the content-addressable verification and AST cache."""
+    db_path = getattr(args, "db", None) or getattr(
+        config, "cache_db_path", ".pycleaner/cache.db"
+    )
+    cache = ContentAddressableCache(db_path=db_path)
+
+    if getattr(args, "clear", False):
+        cache.clear()
+        print_msg("[green]Content-addressable cache cleared successfully.[/green]")
+        return 0
+
+    stats = cache.get_stats()
+    if getattr(args, "json", False):
+        print(json.dumps(stats, indent=2))
+        return 0
+
+    print_msg("[bold cyan]=== Content-Addressable Cache Statistics ===[/bold cyan]")
+    print_msg(f"  Database Path:       {cache.db_path}")
+    print_msg(f"  Cached File Entries: {stats['file_cache_entries']}")
+    print_msg(f"  Provenance Records:  {stats['provenance_entries']}")
+    print_msg(f"  Database File Size:  {stats['db_size_bytes']:,} bytes")
+    return 0
+
+
 def _render_audit_json(audit_report: DependencyAuditReport) -> int:
     print(
         json.dumps(
@@ -1306,12 +1425,10 @@ def _render_audit_cli_output(
 
 def _cmd_audit(args: argparse.Namespace, config: PyCleanerConfig, print_msg) -> int:
     """Dependency audit command."""
-    root_dir = Path(args.paths[0]).resolve() if args.paths else Path.cwd()
-    if not root_dir.is_dir():
-        root_dir = root_dir.parent
+    root_dir = find_project_root(args.paths[0] if args.paths else None)
 
     is_check = getattr(args, "check", False)
-    auditor = DependencyAuditor(root_dir)
+    auditor = DependencyAuditor(root_dir, exclude_patterns=config.exclude)
     audit_report = auditor.audit(
         fix=getattr(args, "fix_deps", False) and not is_check,
         prune_unused=getattr(args, "prune_deps", False) and not is_check,
@@ -1403,7 +1520,7 @@ def _cmd_scan(
         severity_threshold=severity,
         ignore_rules=set(config.ignore_security_rules),
     )
-    report = scanner.scan_project(root_dir)
+    report = scanner.scan_project(root_dir, exclude_patterns=config.exclude)
 
     target_base = args.paths[0] if args.paths else "."
     if getattr(args, "json", False):
@@ -1502,7 +1619,7 @@ def _cmd_complexity(
         root_dir = root_dir.parent
 
     analyzer = ComplexityAnalyzer()
-    report = analyzer.analyze_project(root_dir)
+    report = analyzer.analyze_project(root_dir, exclude_patterns=config.exclude)
 
     thresholds = (
         getattr(args, "max_cyclomatic", config.max_cyclomatic_complexity),
@@ -1582,7 +1699,7 @@ def _cmd_dead_code(
     )
     if getattr(args, "fix", False):
         print_msg(f"[bold green]Pruning dead code across {root_dir}...[/bold green]")
-        fix_results = detector.fix_project(root_dir)
+        fix_results = detector.fix_project(root_dir, exclude_patterns=config.exclude)
         total_pruned = sum(len(res.pruned_items) for res in fix_results.values())
         print_msg(
             f"[green]Successfully fixed {len(fix_results)} file(s), pruned {total_pruned} dead code item(s).[/green]"
@@ -1595,7 +1712,7 @@ def _cmd_dead_code(
             print_msg(f"  [cyan]{rel_p}[/cyan]: {len(res.pruned_items)} pruned")
         return 0
 
-    report = detector.scan_project(root_dir)
+    report = detector.scan_project(root_dir, exclude_patterns=config.exclude)
 
     if getattr(args, "json", False):
         return _render_dead_code_json(report.items)
@@ -1680,7 +1797,7 @@ def _cmd_types(
         root_dir = root_dir.parent
 
     checker = TypeChecker(strict=config.strict_types)
-    report = checker.check_project(root_dir)
+    report = checker.check_project(root_dir, exclude_patterns=config.exclude)
 
     target_base = args.paths[0] if args.paths else "."
     if getattr(args, "json", False):
@@ -1774,7 +1891,7 @@ def _cmd_taint(
         root_dir = root_dir.parent
 
     engine = TaintEngine()
-    report = engine.scan_path(root_dir)
+    report = engine.scan_path(root_dir, exclude_patterns=config.exclude)
 
     target_base = args.paths[0] if args.paths else "."
     if getattr(args, "json", False):

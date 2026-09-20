@@ -23,6 +23,7 @@ wheels/
 .ruff_cache/
 .mypy_cache/
 .venv/
+.release-test/
 GEMINI.md
 CODE_QUALITY.md
 docs/

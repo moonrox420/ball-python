@@ -13,6 +13,7 @@ import importlib.metadata
 import re
 import shutil
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
@@ -76,9 +77,13 @@ class DependencyAuditor:
         "playwright": "playwright",
     }
 
-    def __init__(self, root_dir: str | Path) -> None:
+    def __init__(
+        self, root_dir: str | Path, exclude_patterns: Sequence[str] = ()
+    ) -> None:
         self.root_dir = Path(root_dir).resolve()
+        self.exclude_patterns = tuple(exclude_patterns)
         self.stdlib_names = set(sys.stdlib_module_names)
+        self._last_optional_packages: set[str] = set()
         try:
             self.dist_map = importlib.metadata.packages_distributions()
         except AttributeError:
@@ -130,10 +135,20 @@ class DependencyAuditor:
                     imports.add(root_pkg)
         return imports
 
-    def scan_codebase_imports(self) -> set[str]:
-        """Scan all discovered Python files across the project for imported modules."""
+    def scan_codebase_imports(
+        self, target_files: Sequence[Path] | None = None
+    ) -> set[str]:
+        """Scan Python files across the project or given targets for imported modules."""
+        if target_files is not None:
+            files_to_scan = [
+                f for f in target_files if f.is_file() and f.suffix == ".py"
+            ]
+        else:
+            files_to_scan = collect_project_python_files(
+                self.root_dir, exclude_patterns=self.exclude_patterns
+            )
         imported_modules: set[str] = set()
-        for py_file in collect_project_python_files(self.root_dir):
+        for py_file in files_to_scan:
             imported_modules.update(self._extract_imports_from_file(py_file))
         return imported_modules
 
@@ -163,7 +178,7 @@ class DependencyAuditor:
                     local_mods.add(str(proj_name))
                     local_mods.add(str(proj_name).replace("-", "_"))
             except Exception:
-                pass
+                pass  # Ignore invalid or non-standard pyproject.toml configuration
 
         # 3. Discover local .py files and subpackages (including PEP 420 namespace packages)
         search_dirs = [self.root_dir]
@@ -217,11 +232,12 @@ class DependencyAuditor:
                 declared[canon] = line
         return declared
 
-    def _read_pyproject_toml(self) -> dict[str, str]:
+    def _read_pyproject_toml(self) -> tuple[dict[str, str], set[str]]:
         declared: dict[str, str] = {}
+        optional_pkgs: set[str] = set()
         pyproject_file = self.root_dir / "pyproject.toml"
         if not pyproject_file.exists():
-            return declared
+            return declared, optional_pkgs
 
         try:
             import tomllib
@@ -232,21 +248,42 @@ class DependencyAuditor:
             data = tomllib.loads(
                 pyproject_file.read_text(encoding="utf-8", errors="ignore")
             )
-            project_deps = data.get("project", {}).get("dependencies", [])
-            for dep in project_deps:
-                pkg_match = re.match(r"^([a-zA-Z0-9_.-]+)", dep.strip())
-                if pkg_match:
-                    pkg_name = pkg_match.group(1)
-                    canon = self.canonicalize_name(pkg_name)
-                    declared[canon] = dep
+            project_data = data.get("project", {})
+            for dep in project_data.get("dependencies", []):
+                if isinstance(dep, str):
+                    pkg_match = re.match(r"^([a-zA-Z0-9_.-]+)", dep.strip())
+                    if pkg_match:
+                        canon = self.canonicalize_name(pkg_match.group(1))
+                        declared[canon] = dep
+
+            for opt_list in project_data.get("optional-dependencies", {}).values():
+                if isinstance(opt_list, list):
+                    for dep in opt_list:
+                        if isinstance(dep, str):
+                            pkg_match = re.match(r"^([a-zA-Z0-9_.-]+)", dep.strip())
+                            if pkg_match:
+                                canon = self.canonicalize_name(pkg_match.group(1))
+                                declared[canon] = dep
+                                optional_pkgs.add(canon)
+
+            for grp_list in data.get("dependency-groups", {}).values():
+                if isinstance(grp_list, list):
+                    for dep in grp_list:
+                        if isinstance(dep, str):
+                            pkg_match = re.match(r"^([a-zA-Z0-9_.-]+)", dep.strip())
+                            if pkg_match:
+                                canon = self.canonicalize_name(pkg_match.group(1))
+                                declared[canon] = dep
+                                optional_pkgs.add(canon)
         except Exception:
-            pass
-        return declared
+            pass  # Best-effort reading; continue if pyproject.toml is unparseable
+        return declared, optional_pkgs
 
     def read_declared_dependencies(self) -> dict[str, str]:
         """Read declared dependencies from requirements.txt or pyproject.toml."""
         declared = self._read_requirements_txt()
-        declared.update(self._read_pyproject_toml())
+        pyproj_declared, self._last_optional_packages = self._read_pyproject_toml()
+        declared.update(pyproj_declared)
         return declared
 
     def _resolve_expected_distributions(
@@ -260,17 +297,23 @@ class DependencyAuditor:
         return expected_dists
 
     def _find_missing_and_unused(
-        self, expected_dists: dict[str, str], declared: dict[str, str]
+        self,
+        expected_dists: dict[str, str],
+        declared: dict[str, str],
+        optional_packages: set[str] | None = None,
     ) -> tuple[set[str], set[str]]:
         missing_packages = {
             orig_name
             for canon, orig_name in expected_dists.items()
             if canon not in declared
         }
+        optional_set = optional_packages or set()
         unused_packages = {
             orig_line
             for canon, orig_line in declared.items()
-            if canon not in expected_dists and canon not in self._KNOWN_DEV_TOOLS
+            if canon not in expected_dists
+            and canon not in self._KNOWN_DEV_TOOLS
+            and canon not in optional_set
         }
         return missing_packages, unused_packages
 
@@ -294,10 +337,13 @@ class DependencyAuditor:
         return details
 
     def audit(
-        self, fix: bool = False, prune_unused: bool = False
+        self,
+        fix: bool = False,
+        prune_unused: bool = False,
+        target_files: Sequence[Path] | None = None,
     ) -> DependencyAuditReport:
         """Audit dependencies and optionally update requirements.txt."""
-        all_imports = self.scan_codebase_imports()
+        all_imports = self.scan_codebase_imports(target_files=target_files)
         local_mods = self.identify_local_modules()
 
         third_party_mods = {
@@ -309,7 +355,7 @@ class DependencyAuditor:
         declared = self.read_declared_dependencies()
 
         missing_packages, unused_packages = self._find_missing_and_unused(
-            expected_dists, declared
+            expected_dists, declared, optional_packages=self._last_optional_packages
         )
 
         fixed_reqs = False
@@ -344,7 +390,7 @@ class DependencyAuditor:
             try:
                 shutil.copy2(req_file, backup_file)
             except OSError:
-                pass
+                pass  # Continue if backup creation fails
             existing_lines = req_file.read_text(
                 encoding="utf-8", errors="ignore"
             ).splitlines()

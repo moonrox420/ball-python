@@ -8,6 +8,7 @@ unreachable code after return/raise/break/continue, and empty pass branches.
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
@@ -353,25 +354,6 @@ class _ProjectScanState:
 class DeadCodeDetector:
     """Detects dead code across a Python project."""
 
-    IGNORE_DIRS = frozenset(
-        {
-            ".git",
-            ".venv",
-            "venv",
-            "env",
-            "__pycache__",
-            "build",
-            "dist",
-            ".tox",
-            ".mypy_cache",
-            ".pytest_cache",
-            ".ruff_cache",
-            "site-packages",
-            "node_modules",
-            ".eggs",
-        }
-    )
-
     # Names that should never be flagged as dead code
     PROTECTED_NAMES = frozenset(
         {
@@ -487,10 +469,12 @@ class DeadCodeDetector:
         )
         self.ignore_names = ignore_names or set()
 
-    def scan_project(self, root_dir: Path | str) -> DeadCodeReport:
+    def scan_project(
+        self, root_dir: Path | str, exclude_patterns: Sequence[str] = ()
+    ) -> DeadCodeReport:
         """Scan an entire project directory for dead code."""
         root = Path(root_dir).resolve()
-        py_files = self._discover_files(root)
+        py_files = self._discover_files(root, exclude_patterns=exclude_patterns)
 
         state = _ProjectScanState(framework_registry=self.framework_registry)
         for py_file in py_files:
@@ -565,9 +549,11 @@ class DeadCodeDetector:
             return True
         return self._matches_ignore_pattern(name)
 
-    def _discover_files(self, root: Path) -> list[Path]:
+    def _discover_files(
+        self, root: Path, exclude_patterns: Sequence[str] = ()
+    ) -> list[Path]:
         """Walk the project tree and collect .py files, respecting ignore dirs and gitignore."""
-        return collect_project_python_files(root)
+        return collect_project_python_files(root, exclude_patterns=exclude_patterns)
 
     def fix_source(self, source: str, filename: str = "<stdin>") -> DeadCodeFixResult:
         """Surgically fix dead code in in-memory source."""
@@ -585,10 +571,12 @@ class DeadCodeDetector:
             path.write_text(res.code, encoding="utf-8")
         return res
 
-    def fix_project(self, root_dir: Path | str) -> dict[Path, DeadCodeFixResult]:
+    def fix_project(
+        self, root_dir: Path | str, exclude_patterns: Sequence[str] = ()
+    ) -> dict[Path, DeadCodeFixResult]:
         """Surgically fix dead code across all project Python files."""
         root = Path(root_dir).resolve()
-        py_files = self._discover_files(root)
+        py_files = self._discover_files(root, exclude_patterns=exclude_patterns)
         results: dict[Path, DeadCodeFixResult] = {}
         for pf in py_files:
             res = self.fix_file(pf, apply_changes=True)

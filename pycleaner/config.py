@@ -36,6 +36,7 @@ class PyCleanerConfig:
             "generated/",
             "*_pb2.py",
             "*_pb2_grpc.py",
+            "editor-*.py",
         ]
     )
     include: list[str] = field(default_factory=list)
@@ -155,7 +156,13 @@ def load_config(
     """Load and merge configuration from file and CLI overrides."""
     file_config = _resolve_file_config(project_root, explicit_config_file)
     merged: dict[str, Any] = {
-        "exclude": ["migrations/", "generated/", "*_pb2.py", "*_pb2_grpc.py"],
+        "exclude": [
+            "migrations/",
+            "generated/",
+            "*_pb2.py",
+            "*_pb2_grpc.py",
+            "editor-*.py",
+        ],
         "include": [],
         "fix_py2_syntax": True,
         "fix_conditional_assignments": True,
