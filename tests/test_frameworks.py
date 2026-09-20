@@ -131,3 +131,54 @@ class Config:
     assert "timeout" not in names_flagged
     assert "retries" not in names_flagged
     assert "__post_init__" not in names_flagged
+
+
+def test_pytorch_model_methods_not_flagged(tmp_path: Path) -> None:
+    code = """
+import torch
+import torch.nn as nn
+
+class TransformerModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(10, 10)
+
+    def forward(self, x):
+        return self.linear(x)
+
+    def compute_loss(self, pred, target):
+        return (pred - target).sum()
+"""
+    f = tmp_path / "model.py"
+    f.write_text(code, encoding="utf-8")
+
+    detector = DeadCodeDetector()
+    report = detector.scan_project(tmp_path)
+
+    names_flagged = {item.name for item in report.items}
+    assert "forward" not in names_flagged
+    assert "compute_loss" not in names_flagged
+
+
+def test_pydantic_settings_and_model_post_init_not_flagged(tmp_path: Path) -> None:
+    code = """
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class AppConfig(BaseSettings):
+    api_key: str = "secret"
+    model_config = SettingsConfigDict(env_file=".env")
+
+    def model_post_init(self, context) -> None:
+        pass
+"""
+    f = tmp_path / "settings.py"
+    f.write_text(code, encoding="utf-8")
+
+    detector = DeadCodeDetector()
+    report = detector.scan_project(tmp_path)
+
+    names_flagged = {item.name for item in report.items}
+    assert "api_key" not in names_flagged
+    assert "model_config" not in names_flagged
+    assert "model_post_init" not in names_flagged
+

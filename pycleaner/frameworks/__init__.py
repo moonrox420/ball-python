@@ -103,6 +103,7 @@ def get_default_registry() -> FrameworkRegistry:
         FastAPIPlugin,
         PydanticPlugin,
         PytestPlugin,
+        PyTorchPlugin,
         SQLAlchemyPlugin,
     )
 
@@ -112,4 +113,5 @@ def get_default_registry() -> FrameworkRegistry:
     reg.register(FastAPIPlugin())
     reg.register(SQLAlchemyPlugin())
     reg.register(DataclassPlugin())
+    reg.register(PyTorchPlugin())
     return reg

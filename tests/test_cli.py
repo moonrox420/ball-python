@@ -357,6 +357,24 @@ class TestCLI(unittest.TestCase):
         self.assertIn("types: [python]", output)
         self.assertIn("https://github.com/moonrox420/ball-python", output)
 
+    def test_default_invocation_runs_fix_not_ultimate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            folder = Path(tmp_dir)
+            target = folder / "app.py"
+            target.write_text("def run(x)\n    return x\n", encoding="utf-8")
+
+            stdout_buf = io.StringIO()
+            with redirect_stdout(stdout_buf):
+                exit_code = main([str(folder)])
+            output = stdout_buf.getvalue()
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("def run(x):", target.read_text(encoding="utf-8"))
+            # Must NOT invoke 6-phase analytical ultimate runner
+            self.assertNotIn("Full Spectrum Analysis & Healing", output)
+            self.assertNotIn("Phase 2: Project Dependency Audit", output)
+
 
 if __name__ == "__main__":
     unittest.main()
+

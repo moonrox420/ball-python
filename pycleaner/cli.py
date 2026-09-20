@@ -567,7 +567,7 @@ def _resolve_cli_command(args: argparse.Namespace) -> str:
         return "all"
     if getattr(args, "check", False):
         return "check"
-    return "ultimate"
+    return "fix"
 
 
 def _run_all_command(

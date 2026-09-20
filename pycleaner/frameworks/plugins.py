@@ -2,7 +2,7 @@
 pycleaner.frameworks.plugins
 ============================
 
-Concrete Framework Plugins for Pydantic, Pytest, FastAPI, SQLAlchemy, and Dataclasses.
+Concrete Framework Plugins for Pydantic, Pytest, FastAPI, SQLAlchemy, Dataclasses, and PyTorch.
 """
 
 from __future__ import annotations
@@ -50,15 +50,18 @@ class PydanticPlugin:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.split(".")[0] == "pydantic":
+                    if alias.name.split(".")[0] in ("pydantic", "pydantic_settings"):
                         return True
             elif isinstance(node, ast.ImportFrom):
-                if node.module and node.module.split(".")[0] == "pydantic":
+                if node.module and node.module.split(".")[0] in (
+                    "pydantic",
+                    "pydantic_settings",
+                ):
                     return True
         return False
 
     def get_protected_names(self, tree: ast.AST) -> set[str]:
-        return {"model_config", "Config", "ConfigDict"}
+        return {"model_config", "Config", "ConfigDict", "model_post_init"}
 
     def get_protected_decorators(self) -> set[str]:
         return self._VALIDATOR_DECORATORS
@@ -288,3 +291,74 @@ class DataclassPlugin:
         tree: ast.AST,
     ) -> bool:
         return name in self.get_protected_names(tree)
+
+
+class PyTorchPlugin:
+    """Understands PyTorch nn.Module, LightningModule, HuggingFace models, and datasets."""
+
+    name = "pytorch"
+    _MODULE_BASES = {
+        "Module",
+        "LightningModule",
+        "PreTrainedModel",
+        "Dataset",
+        "IterableDataset",
+        "Sampler",
+    }
+    _PROTECTED_METHODS = {
+        "forward",
+        "backward",
+        "training_step",
+        "validation_step",
+        "test_step",
+        "predict_step",
+        "configure_optimizers",
+        "optimizer_step",
+        "compute_loss",
+        "reset_parameters",
+        "extra_repr",
+        "state_dict",
+        "load_state_dict",
+        "collate_fn",
+    }
+
+    def is_applicable(self, tree: ast.AST, filepath: Path | str) -> bool:
+        torch_pkgs = {
+            "torch",
+            "torchvision",
+            "torchaudio",
+            "pytorch_lightning",
+            "lightning",
+            "transformers",
+            "accelerate",
+            "timm",
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in torch_pkgs:
+                        return True
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and node.module.split(".")[0] in torch_pkgs:
+                    return True
+        return False
+
+    def get_protected_names(self, tree: ast.AST) -> set[str]:
+        return self._PROTECTED_METHODS
+
+    def get_protected_decorators(self) -> set[str]:
+        return set()
+
+    def is_protected_field(self, node: ast.AST, class_node: ast.ClassDef) -> bool:
+        return _has_base_named(class_node, self._MODULE_BASES)
+
+    def should_ignore_definition(
+        self,
+        name: str,
+        kind: str,
+        node: ast.AST,
+        context: str,
+        tree: ast.AST,
+    ) -> bool:
+        return name in self._PROTECTED_METHODS
+

@@ -59,7 +59,7 @@ Add `ballpython` to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/moonrox420/ball-python
-    rev: v2.0.3
+    rev: v2.0.4
     hooks:
       - id: pycleaner
         args: ["check"]
