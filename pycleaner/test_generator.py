@@ -267,7 +267,9 @@ class TestGenerator:
             if clean_type == "None":
                 return "assert result is None"
             if "|" in clean_type:
-                types = [t.strip() for t in clean_type.split("|") if t.strip() != "None"]
+                types = [
+                    t.strip() for t in clean_type.split("|") if t.strip() != "None"
+                ]
                 if types:
                     return f"assert isinstance(result, ({', '.join(types)})) or result is None"
             if "[" in clean_type:
@@ -489,7 +491,9 @@ class TestGenerator:
             if "." in tc.func_name and tc.parent_class:
                 method_name = tc.func_name.split(".", 1)[1]
                 lines.append(f"    instance = {module_name}.{tc.parent_class}()")
-                lines.append(f"    result = {call_prefix}instance.{method_name}({args_str})")
+                lines.append(
+                    f"    result = {call_prefix}instance.{method_name}({args_str})"
+                )
             else:
                 func_invocation = f"{module_name}.{tc.func_name}({args_str})"
                 lines.append(f"    result = {call_prefix}{func_invocation}")

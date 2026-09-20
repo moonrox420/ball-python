@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import ast
 import importlib.metadata
-import os
 import re
 import shutil
 import sys
@@ -18,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
-from pycleaner.discovery import collect_project_python_files, is_protected_file
+from pycleaner.discovery import collect_project_python_files
 
 
 @dataclass(slots=True)
@@ -117,7 +116,7 @@ class DependencyAuditor:
         imports: set[str] = set()
         try:
             tree = ast.parse(file_path.read_text(encoding="utf-8", errors="ignore"))
-        except (SyntaxError, UnicodeDecodeError):
+        except SyntaxError:
             return imports
 
         for node in ast.walk(tree):
@@ -154,8 +153,12 @@ class DependencyAuditor:
             except ImportError:
                 import tomli as tomllib  # type: ignore
             try:
-                data = tomllib.loads(pyproject_file.read_text(encoding="utf-8", errors="ignore"))
-                proj_name = data.get("project", {}).get("name") or data.get("tool", {}).get("poetry", {}).get("name")
+                data = tomllib.loads(
+                    pyproject_file.read_text(encoding="utf-8", errors="ignore")
+                )
+                proj_name = data.get("project", {}).get("name") or data.get(
+                    "tool", {}
+                ).get("poetry", {}).get("name")
                 if proj_name:
                     local_mods.add(str(proj_name))
                     local_mods.add(str(proj_name).replace("-", "_"))
@@ -176,7 +179,9 @@ class DependencyAuditor:
                     elif item.is_dir() and not item.name.startswith((".", "__")):
                         # Standard package or PEP 420 namespace package with python files inside
                         if (item / "__init__.py").exists() or any(
-                            sub.suffix == ".py" for sub in item.iterdir() if sub.is_file()
+                            sub.suffix == ".py"
+                            for sub in item.iterdir()
+                            if sub.is_file()
                         ):
                             local_mods.add(item.name)
             except OSError:
@@ -224,7 +229,9 @@ class DependencyAuditor:
             import tomli as tomllib  # type: ignore
 
         try:
-            data = tomllib.loads(pyproject_file.read_text(encoding="utf-8", errors="ignore"))
+            data = tomllib.loads(
+                pyproject_file.read_text(encoding="utf-8", errors="ignore")
+            )
             project_deps = data.get("project", {}).get("dependencies", [])
             for dep in project_deps:
                 pkg_match = re.match(r"^([a-zA-Z0-9_.-]+)", dep.strip())
@@ -281,7 +288,9 @@ class DependencyAuditor:
                 f"Unused dependencies (declared but not imported): {', '.join(sorted(unused))}"
             )
         if fixed:
-            details.append("Updated requirements.txt successfully (backup saved as requirements.txt.bak)")
+            details.append(
+                "Updated requirements.txt successfully (backup saved as requirements.txt.bak)"
+            )
         return details
 
     def audit(
@@ -336,7 +345,9 @@ class DependencyAuditor:
                 shutil.copy2(req_file, backup_file)
             except OSError:
                 pass
-            existing_lines = req_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+            existing_lines = req_file.read_text(
+                encoding="utf-8", errors="ignore"
+            ).splitlines()
 
         remove_canons = {
             self.canonicalize_name(m.group(1))
@@ -345,10 +356,11 @@ class DependencyAuditor:
         }
 
         # Filter out any local module from being appended to requirements.txt
-        local_canons = {self.canonicalize_name(m) for m in self.identify_local_modules()}
+        local_canons = {
+            self.canonicalize_name(m) for m in self.identify_local_modules()
+        }
         safe_missing = {
-            pkg for pkg in missing
-            if self.canonicalize_name(pkg) not in local_canons
+            pkg for pkg in missing if self.canonicalize_name(pkg) not in local_canons
         }
 
         new_lines: list[str] = []

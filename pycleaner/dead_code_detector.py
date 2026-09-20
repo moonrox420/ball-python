@@ -7,14 +7,13 @@ unreachable code after return/raise/break/continue, and empty pass branches.
 
 from __future__ import annotations
 
-from pycleaner.discovery import collect_project_python_files
-from pycleaner.frameworks import FrameworkRegistry, get_default_registry
-
 import ast
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
+
+from pycleaner.discovery import collect_project_python_files
+from pycleaner.frameworks import FrameworkRegistry, get_default_registry
 
 
 @dataclass(slots=True)
@@ -569,12 +568,15 @@ class DeadCodeDetector:
     def _discover_files(self, root: Path) -> list[Path]:
         """Walk the project tree and collect .py files, respecting ignore dirs and gitignore."""
         return collect_project_python_files(root)
+
     def fix_source(self, source: str, filename: str = "<stdin>") -> DeadCodeFixResult:
         """Surgically fix dead code in in-memory source."""
         fixer = DeadCodeFixer()
         return fixer.fix(source, filename=filename)
 
-    def fix_file(self, filepath: Path | str, apply_changes: bool = True) -> DeadCodeFixResult:
+    def fix_file(
+        self, filepath: Path | str, apply_changes: bool = True
+    ) -> DeadCodeFixResult:
         """Surgically fix dead code in a file."""
         path = Path(filepath).resolve()
         content = path.read_text(encoding="utf-8", errors="replace")
@@ -593,7 +595,6 @@ class DeadCodeDetector:
             if res.changed:
                 results[pf] = res
         return results
-
 
 
 @dataclass(slots=True)
@@ -647,7 +648,11 @@ class _DeadCodePrunerCollector(ast.NodeVisitor):
                 terminal_seen = True
             elif isinstance(stmt, ast.Pass) and len(non_doc) > 1:
                 self.deletions.append(
-                    (stmt.lineno, getattr(stmt, "end_lineno", stmt.lineno), f"Pruned redundant 'pass' at line {stmt.lineno}")
+                    (
+                        stmt.lineno,
+                        getattr(stmt, "end_lineno", stmt.lineno),
+                        f"Pruned redundant 'pass' at line {stmt.lineno}",
+                    )
                 )
             elif (
                 isinstance(stmt, ast.If)
@@ -656,7 +661,11 @@ class _DeadCodePrunerCollector(ast.NodeVisitor):
                 and not stmt.orelse
             ):
                 self.deletions.append(
-                    (stmt.lineno, getattr(stmt, "end_lineno", stmt.lineno), f"Pruned dead 'if False' branch at line {stmt.lineno}")
+                    (
+                        stmt.lineno,
+                        getattr(stmt, "end_lineno", stmt.lineno),
+                        f"Pruned dead 'if False' branch at line {stmt.lineno}",
+                    )
                 )
             self.visit(stmt)
 
@@ -664,7 +673,11 @@ class _DeadCodePrunerCollector(ast.NodeVisitor):
             start_line = unreachable[0].lineno
             end_line = getattr(unreachable[-1], "end_lineno", unreachable[-1].lineno)
             self.deletions.append(
-                (start_line, end_line, f"Pruned {len(unreachable)} unreachable statement(s) at lines {start_line}-{end_line}")
+                (
+                    start_line,
+                    end_line,
+                    f"Pruned {len(unreachable)} unreachable statement(s) at lines {start_line}-{end_line}",
+                )
             )
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
@@ -730,7 +743,9 @@ class DeadCodeFixer:
                 break
 
             lines = current_code.splitlines(keepends=True)
-            sorted_deletions = sorted(collector.deletions, key=lambda x: x[0], reverse=True)
+            sorted_deletions = sorted(
+                collector.deletions, key=lambda x: x[0], reverse=True
+            )
             for start_line, end_line, desc in sorted_deletions:
                 del lines[start_line - 1 : end_line]
                 all_pruned.append(desc)

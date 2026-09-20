@@ -120,7 +120,9 @@ class CleanPipeline:
         self.proof_iterations = opts.proof_iterations
         self.proof_seed = opts.proof_seed
         self.enable_cache = opts.enable_cache
-        self.cache = ContentAddressableCache(opts.cache_db_path) if opts.enable_cache else None
+        self.cache = (
+            ContentAddressableCache(opts.cache_db_path) if opts.enable_cache else None
+        )
         self.config = config
         self.verifier = IsolatedDifferentialVerifier(
             iterations=self.proof_iterations,
@@ -320,7 +322,8 @@ class CleanPipeline:
             path=Path(filename),
             original_code=source,
             cleaned_code=current_code,
-            changed=(current_code != source) and (verification_tier != VerificationTier.TIER_C_REFUSED),
+            changed=(current_code != source)
+            and (verification_tier != VerificationTier.TIER_C_REFUSED),
             is_valid_python=is_valid,
             syntax_repairs=syntax_repairs,
             modernize_transforms=modernize_transforms,
@@ -382,7 +385,10 @@ class CleanPipeline:
                     apply_changes
                     and cached_result.changed
                     and cached_result.is_valid_python
-                    and (cached_result.verification_tier != VerificationTier.TIER_C_REFUSED)
+                    and (
+                        cached_result.verification_tier
+                        != VerificationTier.TIER_C_REFUSED
+                    )
                 ):
                     if backup:
                         bak_path = path.with_name(path.name + ".pycleaner.bak")
@@ -395,7 +401,11 @@ class CleanPipeline:
         if self.cache is not None:
             self.cache.set(path, content, result)
             if result.changed and apply_changes:
-                tier_label = result.verification_tier.value if result.verification_tier else "UNVERIFIED"
+                tier_label = (
+                    result.verification_tier.value
+                    if result.verification_tier
+                    else "UNVERIFIED"
+                )
                 self.cache.record_provenance(
                     file_path=path,
                     transformation_type="clean",

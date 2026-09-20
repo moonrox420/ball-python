@@ -8,8 +8,6 @@ and granular pass control.
 
 from __future__ import annotations
 
-from pycleaner.discovery import DEFAULT_IGNORED_DIRS, collect_project_python_files, is_protected_file
-
 import argparse
 import json
 import os
@@ -21,11 +19,15 @@ from pathlib import Path
 from typing import Any
 
 from pycleaner.baseline import BaselineFingerprint, BaselineManager
-from pycleaner.cache import ContentAddressableCache
 from pycleaner.complexity_analyzer import ComplexityAnalyzer
 from pycleaner.config import ConfigError, PyCleanerConfig, load_config
 from pycleaner.dead_code_detector import DeadCodeDetector
 from pycleaner.dependency_auditor import DependencyAuditor, DependencyAuditReport
+from pycleaner.discovery import (
+    DEFAULT_IGNORED_DIRS,
+    collect_project_python_files,
+    is_protected_file,
+)
 from pycleaner.explanations import get_explanation, list_rules
 from pycleaner.pipeline import CleanPipeline, CleanResult
 from pycleaner.security_scanner import SecurityScanner
@@ -136,7 +138,8 @@ def _register_fix_subparsers(subparsers: Any) -> None:
     ult_p.add_argument("--diff", action="store_true", help="Show unified diffs")
 
     prove_p = subparsers.add_parser(
-        "prove", help="Verify transformations using differential execution fuzzing (Tier A/B/C)"
+        "prove",
+        help="Verify transformations using differential execution fuzzing (Tier A/B/C)",
     )
     _add_common_args(prove_p)
     _add_fix_args(prove_p)
@@ -351,7 +354,9 @@ def _add_fix_args(parser: argparse.ArgumentParser) -> None:
         "--no-syntax-fix", action="store_true", help="Disable syntax healing"
     )
     parser.add_argument(
-        "--no-modernize", action="store_true", help="Disable PEP 585/604 code modernization"
+        "--no-modernize",
+        action="store_true",
+        help="Disable PEP 585/604 code modernization",
     )
     parser.add_argument(
         "--no-dead-code", action="store_true", help="Disable dead code pruning"
@@ -714,7 +719,9 @@ def _accumulate_result(
 def _build_fix_pipeline(
     args: argparse.Namespace, config: PyCleanerConfig
 ) -> CleanPipeline:
-    verify_proofs = getattr(args, "prove", False) or getattr(args, "command", None) == "prove"
+    verify_proofs = (
+        getattr(args, "prove", False) or getattr(args, "command", None) == "prove"
+    )
     proof_iterations = getattr(args, "proof_iterations", 50)
     proof_seed = getattr(args, "proof_seed", None)
     enable_cache = getattr(args, "cache", False)
@@ -1016,16 +1023,26 @@ def _cmd_fix(
             )
         tolerated, new_debt = baseline_mgr.filter_new_issues(current_issues)
         if not is_json:
-            print_msg(f"\n[bold cyan]Baseline Ratchet Enforcement ({args.baseline}):[/bold cyan]")
+            print_msg(
+                f"\n[bold cyan]Baseline Ratchet Enforcement ({args.baseline}):[/bold cyan]"
+            )
             if tolerated:
-                print_msg(f"  • Baseline tolerated: [yellow]{len(tolerated)}[/yellow] existing issue(s)")
+                print_msg(
+                    f"  • Baseline tolerated: [yellow]{len(tolerated)}[/yellow] existing issue(s)"
+                )
             if new_debt:
-                print_msg(f"  • [bold red]Ratchet Violation:[/bold red] {len(new_debt)} new technical debt issue(s) detected!")
+                print_msg(
+                    f"  • [bold red]Ratchet Violation:[/bold red] {len(new_debt)} new technical debt issue(s) detected!"
+                )
                 for nd in new_debt:
-                    print_msg(f"    [red]• [X] {nd.rule} at {nd.file}:{nd.line} ({nd.symbol})[/red]")
+                    print_msg(
+                        f"    [red]• [X] {nd.rule} at {nd.file}:{nd.line} ({nd.symbol})[/red]"
+                    )
                 return 1
             else:
-                print_msg("  • [bold green]Ratchet Passed:[/bold green] 0 new technical debt issues introduced.")
+                print_msg(
+                    "  • [bold green]Ratchet Passed:[/bold green] 0 new technical debt issues introduced."
+                )
         elif new_debt:
             return 1
 
@@ -1042,7 +1059,7 @@ def _cmd_prove(
     console: Any,
 ) -> int:
     """The Proof-Carrying Differential Equivalence Runner."""
-    setattr(args, "prove", True)
+    args.prove = True
     diff = getattr(args, "diff", False)
     apply_changes = getattr(args, "apply", False)
 
@@ -1074,7 +1091,9 @@ def _cmd_baseline(
     root_dir = _resolve_root_dir(getattr(args, "paths", None))
     py_files = discover_python_files(args.paths, config=config, root=root_dir)
 
-    print_msg("[bold cyan]=== Generating PyCleaner Technical Debt Baseline ===[/bold cyan]")
+    print_msg(
+        "[bold cyan]=== Generating PyCleaner Technical Debt Baseline ===[/bold cyan]"
+    )
     print_msg(f"Inspecting {len(py_files)} file(s) across {root_dir.name}...")
 
     fingerprints: list[BaselineFingerprint] = []
@@ -1137,7 +1156,9 @@ def _cmd_baseline(
     print_msg(f"\n[bold green]Baseline successfully recorded![/bold green]")
     print_msg(f"  • Issues snapshotted: [bold yellow]{len(fingerprints)}[/bold yellow]")
     print_msg(f"  • Output file: [bold]{saved_file}[/bold]")
-    print_msg("\n[dim]Ratchet Guarantee: Technical debt in this repository is now locked. Run CI with:[/dim]")
+    print_msg(
+        "\n[dim]Ratchet Guarantee: Technical debt in this repository is now locked. Run CI with:[/dim]"
+    )
     print_msg(f"  [cyan]pycleaner check --baseline {output_path}[/cyan]\n")
 
     return 0
@@ -1153,7 +1174,9 @@ def _cmd_explain(
 
     if not code:
         rules = list_rules()
-        print_msg("[bold cyan]PyCleaner Diagnostic & Verification Rules Catalog[/bold cyan]\n")
+        print_msg(
+            "[bold cyan]PyCleaner Diagnostic & Verification Rules Catalog[/bold cyan]\n"
+        )
         if console and has_rich:
             table = Table(show_header=True, header_style="bold magenta")
             table.add_column("Code", style="cyan", width=10)
@@ -1161,41 +1184,78 @@ def _cmd_explain(
             table.add_column("Severity", width=12)
             table.add_column("Title", style="white")
             for r in rules:
-                sev_color = "red" if r.severity in ("Critical", "High") else ("yellow" if r.severity == "Medium" else "green")
-                table.add_row(r.code, r.category, f"[{sev_color}]{r.severity}[/{sev_color}]", r.title)
+                sev_color = (
+                    "red"
+                    if r.severity in ("Critical", "High")
+                    else ("yellow" if r.severity == "Medium" else "green")
+                )
+                table.add_row(
+                    r.code,
+                    r.category,
+                    f"[{sev_color}]{r.severity}[/{sev_color}]",
+                    r.title,
+                )
             console.print(table)
         else:
             for r in rules:
                 print(f"{r.code:8} [{r.severity:8}] {r.title} ({r.category})")
-        print_msg("\n[dim]Run 'pycleaner explain <CODE>' for full details and remediation examples.[/dim]")
+        print_msg(
+            "\n[dim]Run 'pycleaner explain <CODE>' for full details and remediation examples.[/dim]"
+        )
         return 0
 
     rule = get_explanation(code)
     if rule is None:
         print_msg(f"[bold red]Unknown rule code or topic:[/bold red] '{code}'")
-        print_msg("[dim]Run 'pycleaner explain' without arguments to list all available rules.[/dim]")
+        print_msg(
+            "[dim]Run 'pycleaner explain' without arguments to list all available rules.[/dim]"
+        )
         return 1
 
-    sev_color = "red" if rule.severity in ("Critical", "High") else ("yellow" if rule.severity == "Medium" else "green")
-    print_msg(f"\n[bold cyan]PyCleaner Rule Guide: {rule.code} - {rule.title}[/bold cyan]")
-    print_msg(f"  [bold]Category:[/bold] {rule.category} | [bold]Severity:[/bold] [{sev_color}]{rule.severity}[/{sev_color}]\n")
+    sev_color = (
+        "red"
+        if rule.severity in ("Critical", "High")
+        else ("yellow" if rule.severity == "Medium" else "green")
+    )
+    print_msg(
+        f"\n[bold cyan]PyCleaner Rule Guide: {rule.code} - {rule.title}[/bold cyan]"
+    )
+    print_msg(
+        f"  [bold]Category:[/bold] {rule.category} | [bold]Severity:[/bold] [{sev_color}]{rule.severity}[/{sev_color}]\n"
+    )
     print_msg(f"[bold]Description:[/bold]\n{rule.description}\n")
 
     if rule.vulnerable_example:
         print_msg("[bold red][X] Flawed / Baseline Example:[/bold red]")
         if console and has_rich:
-            console.print(Syntax(rule.vulnerable_example, "python", theme="monokai", line_numbers=False))
+            console.print(
+                Syntax(
+                    rule.vulnerable_example,
+                    "python",
+                    theme="monokai",
+                    line_numbers=False,
+                )
+            )
         else:
             print(rule.vulnerable_example)
 
     if rule.remediated_example:
         print_msg("\n[bold green][+] Verified / Remediated Example:[/bold green]")
         if console and has_rich:
-            console.print(Syntax(rule.remediated_example, "python", theme="monokai", line_numbers=False))
+            console.print(
+                Syntax(
+                    rule.remediated_example,
+                    "python",
+                    theme="monokai",
+                    line_numbers=False,
+                )
+            )
         else:
             print(rule.remediated_example)
 
-    print_msg(f"\n[bold]Remediation Details & Proof Invariants:[/bold]\n{rule.remediation_details}\n")
+    print_msg(
+        f"\n[bold]Remediation Details & Proof Invariants:[/bold]\n{rule.remediation_details}\n"
+    )
     return 0
 
 
@@ -1524,7 +1584,9 @@ def _cmd_dead_code(
         print_msg(f"[bold green]Pruning dead code across {root_dir}...[/bold green]")
         fix_results = detector.fix_project(root_dir)
         total_pruned = sum(len(res.pruned_items) for res in fix_results.values())
-        print_msg(f"[green]Successfully fixed {len(fix_results)} file(s), pruned {total_pruned} dead code item(s).[/green]")
+        print_msg(
+            f"[green]Successfully fixed {len(fix_results)} file(s), pruned {total_pruned} dead code item(s).[/green]"
+        )
         for p, res in fix_results.items():
             try:
                 rel_p = p.relative_to(root_dir)

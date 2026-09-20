@@ -14,16 +14,11 @@ from __future__ import annotations
 import ast
 import dataclasses
 import enum
-import importlib.util
 import inspect
 import multiprocessing as mp
-import os
 import random
-import sys
-import tempfile
 import time
-import traceback
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 
 class VerificationTier(enum.Enum):
@@ -35,12 +30,12 @@ class VerificationTier(enum.Enum):
 @dataclasses.dataclass(frozen=True)
 class CounterExample:
     callable_name: str
-    arguments: Tuple[Any, ...]
-    keyword_arguments: Dict[str, Any]
-    original_result: Optional[str]
-    original_error: Optional[str]
-    transformed_result: Optional[str]
-    transformed_error: Optional[str]
+    arguments: tuple[Any, ...]
+    keyword_arguments: dict[str, Any]
+    original_result: str | None
+    original_error: str | None
+    transformed_result: str | None
+    transformed_error: str | None
     seed: int
 
 
@@ -52,58 +47,70 @@ class ProofReceipt:
     iterations_run: int
     seed: int
     duration_ms: float
-    counterexample: Optional[CounterExample] = None
+    counterexample: CounterExample | None = None
     reason: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
 class ExecutionResult:
     is_success: bool
-    return_repr: Optional[str] = None
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
+    return_repr: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
 
 
 def _worker_differential_fuzz(
     orig_source: str,
     trans_source: str,
     callable_name: str,
-    inputs: List[Tuple[Tuple[Any, ...], Dict[str, Any]]],
+    inputs: list[tuple[tuple[Any, ...], dict[str, Any]]],
     conn: Any,
 ) -> None:
     """Child process worker: executes differential equivalence loop across all synthesized inputs."""
     try:
-        orig_ns: Dict[str, Any] = {"__name__": "__verifier__", "__builtins__": __builtins__}
-        trans_ns: Dict[str, Any] = {"__name__": "__verifier__", "__builtins__": __builtins__}
+        orig_ns: dict[str, Any] = {
+            "__name__": "__verifier__",
+            "__builtins__": __builtins__,
+        }
+        trans_ns: dict[str, Any] = {
+            "__name__": "__verifier__",
+            "__builtins__": __builtins__,
+        }
 
         try:
             orig_code = compile(orig_source, "<orig_sandbox>", "exec")
             exec(orig_code, orig_ns)  # nosec: B102 - intentionally isolated in worker process
         except BaseException as e:
-            conn.send({
-                "status": "unresolvable",
-                "reason": f"Original module execution failed in sandbox: {type(e).__name__}: {e}",
-            })
+            conn.send(
+                {
+                    "status": "unresolvable",
+                    "reason": f"Original module execution failed in sandbox: {type(e).__name__}: {e}",
+                }
+            )
             return
 
         try:
             trans_code = compile(trans_source, "<trans_sandbox>", "exec")
             exec(trans_code, trans_ns)  # nosec: B102 - intentionally isolated in worker process
         except BaseException as e:
-            conn.send({
-                "status": "unresolvable",
-                "reason": f"Transformed module execution failed in sandbox: {type(e).__name__}: {e}",
-            })
+            conn.send(
+                {
+                    "status": "unresolvable",
+                    "reason": f"Transformed module execution failed in sandbox: {type(e).__name__}: {e}",
+                }
+            )
             return
 
         orig_fn = orig_ns.get(callable_name)
         trans_fn = trans_ns.get(callable_name)
 
         if not callable(orig_fn) or not callable(trans_fn):
-            conn.send({
-                "status": "unresolvable",
-                "reason": f"Callable '{callable_name}' not found or not callable in sandbox.",
-            })
+            conn.send(
+                {
+                    "status": "unresolvable",
+                    "reason": f"Callable '{callable_name}' not found or not callable in sandbox.",
+                }
+            )
             return
 
         for index, (args, kwargs) in enumerate(inputs):
@@ -142,28 +149,34 @@ def _worker_differential_fuzz(
                     diverged = True
 
             if diverged:
-                conn.send({
-                    "status": "diverged",
-                    "iteration": index + 1,
-                    "args": args,
-                    "kwargs": kwargs,
-                    "orig_result": orig_repr,
-                    "orig_error": orig_err_msg or orig_err_type,
-                    "trans_result": trans_repr,
-                    "trans_error": trans_err_msg or trans_err_type,
-                })
+                conn.send(
+                    {
+                        "status": "diverged",
+                        "iteration": index + 1,
+                        "args": args,
+                        "kwargs": kwargs,
+                        "orig_result": orig_repr,
+                        "orig_error": orig_err_msg or orig_err_type,
+                        "trans_result": trans_repr,
+                        "trans_error": trans_err_msg or trans_err_type,
+                    }
+                )
                 return
 
-        conn.send({
-            "status": "proven",
-            "iterations_run": len(inputs),
-        })
+        conn.send(
+            {
+                "status": "proven",
+                "iterations_run": len(inputs),
+            }
+        )
     except BaseException as e:
         try:
-            conn.send({
-                "status": "unresolvable",
-                "reason": f"Worker crashed: {type(e).__name__}: {e}",
-            })
+            conn.send(
+                {
+                    "status": "unresolvable",
+                    "reason": f"Worker crashed: {type(e).__name__}: {e}",
+                }
+            )
         except Exception:
             pass
     finally:
@@ -184,18 +197,34 @@ class DeterministicInputSynthesizer:
         annotation = param.annotation
 
         if annotation is int or annotation == "int":
-            return self._rng.choice([0, 1, -1, 42, -999, 2**31 - 1, -2**31])
+            return self._rng.choice([0, 1, -1, 42, -999, 2**31 - 1, -(2**31)])
         if annotation is float or annotation == "float":
-            return self._rng.choice([0.0, 1.0, -1.0, 3.14159, float("inf"), float("-inf")])
+            return self._rng.choice(
+                [0.0, 1.0, -1.0, 3.14159, float("inf"), float("-inf")]
+            )
         if annotation is str or annotation == "str":
-            return self._rng.choice(["", "test", " ", "a" * 100, "\n\t", "null", "123", "utf8_🐍"])
+            return self._rng.choice(
+                ["", "test", " ", "a" * 100, "\n\t", "null", "123", "utf8_🐍"]
+            )
         if annotation is bool or annotation == "bool":
             return self._rng.choice([True, False])
-        if annotation is list or annotation == "list" or getattr(annotation, "__origin__", None) is list:
+        if (
+            annotation is list
+            or annotation == "list"
+            or getattr(annotation, "__origin__", None) is list
+        ):
             return self._rng.choice([[], [0], [1, 2, 3], ["a", "b"]])
-        if annotation is dict or annotation == "dict" or getattr(annotation, "__origin__", None) is dict:
+        if (
+            annotation is dict
+            or annotation == "dict"
+            or getattr(annotation, "__origin__", None) is dict
+        ):
             return self._rng.choice([{}, {"key": "value"}, {"0": 0}])
-        if annotation is tuple or annotation == "tuple" or getattr(annotation, "__origin__", None) is tuple:
+        if (
+            annotation is tuple
+            or annotation == "tuple"
+            or getattr(annotation, "__origin__", None) is tuple
+        ):
             return self._rng.choice([(), (1,), (1, "a")])
         if annotation is None or annotation is type(None):
             return None
@@ -205,9 +234,9 @@ class DeterministicInputSynthesizer:
 
     def generate_arguments(
         self, sig: inspect.Signature
-    ) -> Tuple[Tuple[Any, ...], Dict[str, Any]]:
-        pos_args: List[Any] = []
-        kw_args: Dict[str, Any] = {}
+    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        pos_args: list[Any] = []
+        kw_args: dict[str, Any] = {}
 
         for param in sig.parameters.values():
             if param.kind in (
@@ -235,7 +264,7 @@ class IsolatedDifferentialVerifier:
         self,
         iterations: int = 100,
         timeout_seconds: float = 2.0,
-        base_seed: Optional[int] = None,
+        base_seed: int | None = None,
     ) -> None:
         self.iterations = iterations
         self.timeout_seconds = timeout_seconds
@@ -243,27 +272,78 @@ class IsolatedDifferentialVerifier:
 
     def _extract_signature_from_source(
         self, source: str, callable_name: str
-    ) -> Optional[inspect.Signature]:
+    ) -> inspect.Signature | None:
         try:
             tree = ast.parse(source)
             for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == callable_name:
-                    params: List[inspect.Parameter] = []
+                if (
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == callable_name
+                ):
+                    params: list[inspect.Parameter] = []
                     for arg in node.args.posonlyargs:
-                        ann = ast.unparse(arg.annotation) if arg.annotation else inspect.Parameter.empty
-                        params.append(inspect.Parameter(arg.arg, inspect.Parameter.POSITIONAL_ONLY, annotation=ann))
+                        ann = (
+                            ast.unparse(arg.annotation)
+                            if arg.annotation
+                            else inspect.Parameter.empty
+                        )
+                        params.append(
+                            inspect.Parameter(
+                                arg.arg,
+                                inspect.Parameter.POSITIONAL_ONLY,
+                                annotation=ann,
+                            )
+                        )
                     for arg in node.args.args:
-                        ann = ast.unparse(arg.annotation) if arg.annotation else inspect.Parameter.empty
-                        params.append(inspect.Parameter(arg.arg, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=ann))
+                        ann = (
+                            ast.unparse(arg.annotation)
+                            if arg.annotation
+                            else inspect.Parameter.empty
+                        )
+                        params.append(
+                            inspect.Parameter(
+                                arg.arg,
+                                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                annotation=ann,
+                            )
+                        )
                     if node.args.vararg:
-                        ann = ast.unparse(node.args.vararg.annotation) if node.args.vararg.annotation else inspect.Parameter.empty
-                        params.append(inspect.Parameter(node.args.vararg.arg, inspect.Parameter.VAR_POSITIONAL, annotation=ann))
+                        ann = (
+                            ast.unparse(node.args.vararg.annotation)
+                            if node.args.vararg.annotation
+                            else inspect.Parameter.empty
+                        )
+                        params.append(
+                            inspect.Parameter(
+                                node.args.vararg.arg,
+                                inspect.Parameter.VAR_POSITIONAL,
+                                annotation=ann,
+                            )
+                        )
                     for arg in node.args.kwonlyargs:
-                        ann = ast.unparse(arg.annotation) if arg.annotation else inspect.Parameter.empty
-                        params.append(inspect.Parameter(arg.arg, inspect.Parameter.KEYWORD_ONLY, annotation=ann))
+                        ann = (
+                            ast.unparse(arg.annotation)
+                            if arg.annotation
+                            else inspect.Parameter.empty
+                        )
+                        params.append(
+                            inspect.Parameter(
+                                arg.arg, inspect.Parameter.KEYWORD_ONLY, annotation=ann
+                            )
+                        )
                     if node.args.kwarg:
-                        ann = ast.unparse(node.args.kwarg.annotation) if node.args.kwarg.annotation else inspect.Parameter.empty
-                        params.append(inspect.Parameter(node.args.kwarg.arg, inspect.Parameter.VAR_KEYWORD, annotation=ann))
+                        ann = (
+                            ast.unparse(node.args.kwarg.annotation)
+                            if node.args.kwarg.annotation
+                            else inspect.Parameter.empty
+                        )
+                        params.append(
+                            inspect.Parameter(
+                                node.args.kwarg.arg,
+                                inspect.Parameter.VAR_KEYWORD,
+                                annotation=ann,
+                            )
+                        )
                     return inspect.Signature(parameters=params)
             return None
         except Exception:
@@ -313,7 +393,13 @@ class IsolatedDifferentialVerifier:
         parent_conn, child_conn = ctx.Pipe(duplex=False)
         process = ctx.Process(
             target=_worker_differential_fuzz,
-            args=(original_source, transformed_source, target_callable, inputs, child_conn),
+            args=(
+                original_source,
+                transformed_source,
+                target_callable,
+                inputs,
+                child_conn,
+            ),
         )
         process.daemon = True
         process.start()
@@ -338,7 +424,7 @@ class IsolatedDifferentialVerifier:
 
         try:
             msg = parent_conn.recv()
-        except (EOFError, OSError):
+        except EOFError:
             process.join(timeout=0.2)
             elapsed = (time.perf_counter() - start_time) * 1000.0
             return ProofReceipt(
@@ -395,5 +481,7 @@ class IsolatedDifferentialVerifier:
                 iterations_run=0,
                 seed=self.base_seed,
                 duration_ms=elapsed,
-                reason=msg.get("reason", "Callable could not be verified dynamically in sandbox."),
+                reason=msg.get(
+                    "reason", "Callable could not be verified dynamically in sandbox."
+                ),
             )

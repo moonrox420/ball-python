@@ -16,7 +16,7 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ class BaselineFingerprint:
         raw = f"{self.rule}:{self.file}:{self.line}:{self.symbol}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "rule": self.rule,
             "file": self.file,
@@ -46,7 +46,7 @@ class BaselineManager:
     def __init__(self, baseline_path: Path | str = ".pycleaner/baseline.json") -> None:
         self.baseline_path = Path(baseline_path)
 
-    def load_fingerprints(self) -> Set[str]:
+    def load_fingerprints(self) -> set[str]:
         """Loads baseline issue hashes from disk."""
         if not self.baseline_path.exists():
             return set()
@@ -58,12 +58,12 @@ class BaselineManager:
                 for fp in fingerprints
                 if isinstance(fp, dict) and fp.get("hash")
             }
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError:
             return set()
 
     def save_baseline(
         self,
-        fingerprints: List[BaselineFingerprint],
+        fingerprints: list[BaselineFingerprint],
         root_dir: Path,
     ) -> Path:
         """Serializes fingerprints to the baseline JSON file."""
@@ -90,7 +90,9 @@ class BaselineManager:
         p = Path(file_path)
         if root_dir is not None:
             try:
-                rel = str(p.resolve().relative_to(root_dir.resolve())).replace("\\", "/")
+                rel = str(p.resolve().relative_to(root_dir.resolve())).replace(
+                    "\\", "/"
+                )
             except ValueError:
                 rel = p.name
         else:
@@ -105,16 +107,16 @@ class BaselineManager:
 
     def filter_new_issues(
         self,
-        issues: List[BaselineFingerprint],
-    ) -> Tuple[List[BaselineFingerprint], List[BaselineFingerprint]]:
+        issues: list[BaselineFingerprint],
+    ) -> tuple[list[BaselineFingerprint], list[BaselineFingerprint]]:
         """
         Separates issues into (tolerated_baseline_issues, new_debt_issues).
         Returns:
             (tolerated, new_debt)
         """
         known_hashes = self.load_fingerprints()
-        tolerated: List[BaselineFingerprint] = []
-        new_debt: List[BaselineFingerprint] = []
+        tolerated: list[BaselineFingerprint] = []
+        new_debt: list[BaselineFingerprint] = []
 
         for issue in issues:
             if issue.to_hash() in known_hashes:

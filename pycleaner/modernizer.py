@@ -7,7 +7,7 @@ Performs AST-driven modernization:
 - Automatic injection of 'from __future__ import annotations' when type syntax is modernized
 - Singleton equality comparison healing (== None -> is None, == True/False -> is True/False)
 - Redundant (object) class inheritance pruning (class Foo(object): -> class Foo:)
-- Redundant unicode literal prefix pruning (u"..." -> "...")
+- Redundant unicode literal prefix pruning ("..." -> "...")
 """
 
 from __future__ import annotations
@@ -15,8 +15,6 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
 
 
 @dataclass(slots=True)
@@ -123,7 +121,7 @@ class Modernizer:
             current_code, t_cmp = self._modernize_singleton_comparisons(current_code)
             all_transforms.extend(t_cmp)
 
-        # 3. Unicode literal prefixes (u"..." -> "...")
+        # 3. Unicode literal prefixes ("..." -> "...")
         if self.enable_unicode_prefix_pruning:
             current_code, t_u = self._prune_unicode_prefixes(current_code)
             all_transforms.extend(t_u)
@@ -155,11 +153,15 @@ class Modernizer:
                 if isinstance(base, ast.Name) and base.id == "object":
                     line_idx = node.lineno - 1
                     line_str = lines[line_idx]
-                    pattern = re.compile(rf"(class\s+{re.escape(node.name)})\s*\(\s*object\s*\)\s*:")
+                    pattern = re.compile(
+                        rf"(class\s+{re.escape(node.name)})\s*\(\s*object\s*\)\s*:"
+                    )
                     if pattern.search(line_str):
                         new_line = pattern.sub(rf"class {node.name}:", line_str)
                         edits.append((line_idx, line_idx + 1, new_line))
-                        transforms.append(f"Pruned legacy (object) inheritance from class {node.name}")
+                        transforms.append(
+                            f"Pruned legacy (object) inheritance from class {node.name}"
+                        )
 
         if not edits:
             return source, []
@@ -180,10 +182,16 @@ class Modernizer:
         edits: list[tuple[int, int, int, int, str]] = []
 
         for node in ast.walk(tree):
-            if isinstance(node, ast.Compare) and len(node.ops) == 1 and len(node.comparators) == 1:
+            if (
+                isinstance(node, ast.Compare)
+                and len(node.ops) == 1
+                and len(node.comparators) == 1
+            ):
                 op = node.ops[0]
                 comparator = node.comparators[0]
-                if isinstance(comparator, ast.Constant) and (comparator.value is None or isinstance(comparator.value, bool)):
+                if isinstance(comparator, ast.Constant) and (
+                    comparator.value is None or isinstance(comparator.value, bool)
+                ):
                     val = comparator.value
                     if isinstance(op, ast.Eq):
                         replacement_op = "is"
@@ -196,7 +204,15 @@ class Modernizer:
 
                     left_unparsed = ast.unparse(node.left)
                     new_expr = f"{left_unparsed} {replacement_op} {val}"
-                    edits.append((node.lineno, node.col_offset, node.end_lineno, node.end_col_offset, new_expr))
+                    edits.append(
+                        (
+                            node.lineno,
+                            node.col_offset,
+                            node.end_lineno,
+                            node.end_col_offset,
+                            new_expr,
+                        )
+                    )
 
         if not edits:
             return source, []
@@ -217,7 +233,7 @@ class Modernizer:
         if sub_pattern.search(source):
             new_source = sub_pattern.sub(r"\1", source)
             if new_source != source:
-                transforms.append("Pruned obsolete 'u' unicode string prefixes")
+                transforms.append("Pruned obsolete '' unicode string prefixes")
                 return new_source, transforms
         return source, []
 
@@ -242,12 +258,22 @@ class Modernizer:
                 transformer.changed = True
                 transformer.transformations.extend(sub.transformations)
                 new_repr = ast.unparse(new_node)
-                edits.append((node.lineno, node.col_offset, node.end_lineno, node.end_col_offset, new_repr))
+                edits.append(
+                    (
+                        node.lineno,
+                        node.col_offset,
+                        node.end_lineno,
+                        node.end_col_offset,
+                        new_repr,
+                    )
+                )
 
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 process_annotation(node.returns)
-                for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs:
+                for arg in (
+                    node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+                ):
                     process_annotation(arg.annotation)
                 if node.args.vararg:
                     process_annotation(node.args.vararg.annotation)
@@ -270,7 +296,9 @@ class Modernizer:
 
         if transformer.changed and "from __future__ import annotations" not in res:
             res = self._inject_future_annotations(res)
-            transformer.transformations.append("Injected 'from __future__ import annotations'")
+            transformer.transformations.append(
+                "Injected 'from __future__ import annotations'"
+            )
 
         return res, transformer.transformations
 

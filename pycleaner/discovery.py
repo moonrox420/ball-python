@@ -92,7 +92,9 @@ def load_gitignore_patterns(project_root: Path) -> list[str]:
 
     patterns: list[str] = []
     try:
-        for line in gitignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+        for line in gitignore_file.read_text(
+            encoding="utf-8", errors="ignore"
+        ).splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -109,7 +111,9 @@ def matches_gitignore(rel_path: str, patterns: Sequence[str]) -> bool:
         pat_clean = pat.rstrip("/")
         if fnmatch.fnmatch(normalized, pat) or fnmatch.fnmatch(normalized, pat_clean):
             return True
-        if fnmatch.fnmatch(normalized, f"*/{pat_clean}") or fnmatch.fnmatch(normalized, f"*/{pat}"):
+        if fnmatch.fnmatch(normalized, f"*/{pat_clean}") or fnmatch.fnmatch(
+            normalized, f"*/{pat}"
+        ):
             return True
         for part in normalized.split("/"):
             if fnmatch.fnmatch(part, pat_clean):
@@ -141,7 +145,8 @@ def collect_project_python_files(
     for current_root, dirs, filenames in os.walk(target_root):
         # Prune ignored directories in-place to prevent os.walk from recursing into them
         dirs[:] = [
-            d for d in dirs
+            d
+            for d in dirs
             if not is_ignored_directory(d)
             and not (respect_gitignore and matches_gitignore(d, gitignore_rules))
         ]
@@ -164,7 +169,11 @@ def collect_project_python_files(
 
             if exclude_patterns:
                 rel_posix = Path(rel_path).as_posix()
-                if any(fnmatch.fnmatch(rel_posix, pat) or fnmatch.fnmatch(rel_posix, f"*/{pat}") for pat in exclude_patterns):
+                if any(
+                    fnmatch.fnmatch(rel_posix, pat)
+                    or fnmatch.fnmatch(rel_posix, f"*/{pat}")
+                    for pat in exclude_patterns
+                ):
                     continue
 
             python_files.append(file_path.resolve())

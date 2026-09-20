@@ -32,13 +32,13 @@ __all__ = [
     "DeadCodeFixResult",
     "DeadCodeFixer",
     "DeadCodeReport",
-    "ModernizeResult",
-    "Modernizer",
     "DependencyAuditor",
     "GeneratedTestSuite",
     "ImportResolver",
     "IsolatedDifferentialVerifier",
     "LinterFormatter",
+    "ModernizeResult",
+    "Modernizer",
     "ProofReceipt",
     "PyCleanerConfig",
     "RuleExplanation",
@@ -64,12 +64,17 @@ from pycleaner.baseline import BaselineFingerprint, BaselineManager
 from pycleaner.cache import ContentAddressableCache
 from pycleaner.complexity_analyzer import ComplexityAnalyzer, ComplexityReport
 from pycleaner.config import PyCleanerConfig, load_config
-from pycleaner.dead_code_detector import DeadCodeDetector, DeadCodeFixResult, DeadCodeFixer, DeadCodeReport
-from pycleaner.explanations import RuleExplanation, get_explanation, list_rules
-from pycleaner.modernizer import ModernizeResult, Modernizer
+from pycleaner.dead_code_detector import (
+    DeadCodeDetector,
+    DeadCodeFixer,
+    DeadCodeFixResult,
+    DeadCodeReport,
+)
 from pycleaner.dependency_auditor import DependencyAuditor
+from pycleaner.explanations import RuleExplanation, get_explanation, list_rules
 from pycleaner.import_resolver import ImportResolver
 from pycleaner.linter_formatter import LinterFormatter
+from pycleaner.modernizer import Modernizer, ModernizeResult
 from pycleaner.pipeline import CleanPipeline, CleanResult
 from pycleaner.security_scanner import SecurityReport, SecurityScanner
 from pycleaner.syntax_healer import SyntaxHealer
@@ -83,4 +88,3 @@ from pycleaner.verifier import (
     ProofReceipt,
     VerificationTier,
 )
-

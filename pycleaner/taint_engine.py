@@ -9,12 +9,12 @@ SQL Injection, Path Traversal, SSRF, Deserialization).
 
 from __future__ import annotations
 
-from pycleaner.discovery import collect_project_python_files
-
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
+
+from pycleaner.discovery import collect_project_python_files
 
 
 @dataclass(slots=True)

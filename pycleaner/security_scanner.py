@@ -8,13 +8,12 @@ and assert statements used for input validation.
 
 from __future__ import annotations
 
-from pycleaner.discovery import collect_project_python_files
-
 import ast
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from pycleaner.discovery import collect_project_python_files
 
 
 @dataclass(slots=True)

@@ -217,7 +217,6 @@ class SyntaxHealer:
             diagnostic=diag,
         )
 
-
     def _fix_unindented_blocks(self, source: str) -> tuple[str, int]:
         """
         Auto-heal under-indented blocks following compound statement headers.
@@ -293,7 +292,11 @@ class SyntaxHealer:
                         and not stripped.startswith(('"""', chr(39) * 3))
                     )
 
-                    if not was_in_multiline and not in_multiline_str and (is_sibling_declaration or is_outer_scope):
+                    if (
+                        not was_in_multiline
+                        and not in_multiline_str
+                        and (is_sibling_declaration or is_outer_scope)
+                    ):
                         break
 
                     if curr_indent < desired_indent:

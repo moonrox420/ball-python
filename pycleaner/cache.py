@@ -17,9 +17,8 @@ import hashlib
 import json
 import sqlite3
 import time
-from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Set
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pycleaner.pipeline import CleanResult
@@ -35,9 +34,9 @@ def compute_content_hash(source: str, config_hash: str = "") -> str:
     return hasher.hexdigest()
 
 
-def extract_file_dependencies(source: str) -> List[str]:
+def extract_file_dependencies(source: str) -> list[str]:
     """Extracts imported module names using AST analysis for dependency tracking."""
-    deps: List[str] = []
+    deps: list[str] = []
     try:
         tree = ast.parse(source)
         for node in ast.walk(tree):
@@ -126,7 +125,7 @@ class ContentAddressableCache:
         file_path: Path | str,
         source: str,
         config_hash: str = "",
-    ) -> Optional[CleanResult]:
+    ) -> CleanResult | None:
         """
         Retrieves a cached CleanResult if content_hash matches.
         Returns None on cache miss.
@@ -221,7 +220,7 @@ class ContentAddressableCache:
         file_path: Path | str,
         transformation_type: str,
         verification_tier: str,
-        seed: Optional[int],
+        seed: int | None,
         diff: str,
     ) -> None:
         """Records an immutable audit entry into the provenance ledger."""
@@ -235,11 +234,18 @@ class ContentAddressableCache:
                     verification_tier, seed, diff
                 ) VALUES (?, ?, ?, ?, ?, ?);
                 """,
-                (now, canonical_path, transformation_type, verification_tier, seed, diff),
+                (
+                    now,
+                    canonical_path,
+                    transformation_type,
+                    verification_tier,
+                    seed,
+                    diff,
+                ),
             )
             conn.commit()
 
-    def get_provenance(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_provenance(self, limit: int = 50) -> list[dict[str, Any]]:
         """Returns the most recent records from the provenance ledger."""
         with self._get_connection() as conn:
             cursor = conn.execute(
@@ -258,7 +264,9 @@ class ContentAddressableCache:
         """Invalidates the cache entry for a specific file path."""
         canonical_path = str(Path(file_path).resolve())
         with self._get_connection() as conn:
-            conn.execute("DELETE FROM file_cache WHERE file_path = ?;", (canonical_path,))
+            conn.execute(
+                "DELETE FROM file_cache WHERE file_path = ?;", (canonical_path,)
+            )
             conn.commit()
 
     def clear(self) -> None:
@@ -267,7 +275,7 @@ class ContentAddressableCache:
             conn.execute("DELETE FROM file_cache;")
             conn.commit()
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Returns statistics on cache utilization and database storage."""
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT COUNT(*) as cnt FROM file_cache;")

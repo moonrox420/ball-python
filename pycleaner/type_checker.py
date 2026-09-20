@@ -8,12 +8,11 @@ and performs type narrowing across conditional branches.
 
 from __future__ import annotations
 
-from pycleaner.discovery import collect_project_python_files
-
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pycleaner.discovery import collect_project_python_files
 from pycleaner.typeshed_resolver import TypeshedResolver
 
 # ---------------------------------------------------------------------------

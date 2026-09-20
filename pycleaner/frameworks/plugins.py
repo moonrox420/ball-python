@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Set
 
 
 def _get_decorator_name(node: ast.expr) -> str:
@@ -94,7 +93,11 @@ class PytestPlugin:
 
     def is_applicable(self, tree: ast.AST, filepath: Path | str) -> bool:
         f_name = Path(filepath).name
-        if f_name.startswith("test_") or f_name.endswith("_test.py") or f_name == "conftest.py":
+        if (
+            f_name.startswith("test_")
+            or f_name.endswith("_test.py")
+            or f_name == "conftest.py"
+        ):
             return True
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -153,7 +156,16 @@ class FastAPIPlugin:
     """Understands FastAPI route handlers, dependencies, and lifecycle hooks."""
 
     name = "fastapi"
-    _ROUTE_METHODS = {"get", "post", "put", "delete", "patch", "options", "head", "api_route"}
+    _ROUTE_METHODS = {
+        "get",
+        "post",
+        "put",
+        "delete",
+        "patch",
+        "options",
+        "head",
+        "api_route",
+    }
 
     def is_applicable(self, tree: ast.AST, filepath: Path | str) -> bool:
         for node in ast.walk(tree):
@@ -162,7 +174,10 @@ class FastAPIPlugin:
                     for a in node.names:
                         if a.name in ("fastapi", "starlette"):
                             return True
-                elif node.module and node.module.split(".")[0] in ("fastapi", "starlette"):
+                elif node.module and node.module.split(".")[0] in (
+                    "fastapi",
+                    "starlette",
+                ):
                     return True
         return False
 
@@ -189,7 +204,11 @@ class FastAPIPlugin:
                 parts = d_name.split(".")
                 if len(parts) >= 2 and parts[-1] in self._ROUTE_METHODS:
                     return True
-                if "middleware" in d_name or "on_event" in d_name or "exception_handler" in d_name:
+                if (
+                    "middleware" in d_name
+                    or "on_event" in d_name
+                    or "exception_handler" in d_name
+                ):
                     return True
         return False
 

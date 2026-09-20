@@ -9,7 +9,6 @@ rationale for PyCleaner rules, security findings, and verification tiers.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 
 @dataclass(frozen=True)
@@ -24,7 +23,7 @@ class RuleExplanation:
     remediation_details: str
 
 
-_RULES_REGISTRY: Dict[str, RuleExplanation] = {
+_RULES_REGISTRY: dict[str, RuleExplanation] = {
     "DC001": RuleExplanation(
         code="DC001",
         title="Unused Local Variable",
@@ -41,8 +40,7 @@ _RULES_REGISTRY: Dict[str, RuleExplanation] = {
             "    return sum(items)\n"
         ),
         remediated_example=(
-            "def calculate_total(items: list[float]) -> float:\n"
-            "    return sum(items)\n"
+            "def calculate_total(items: list[float]) -> float:\n    return sum(items)\n"
         ),
         remediation_details=(
             "PyCleaner prunes the unused assignment statement if it is side-effect free. "
@@ -67,9 +65,7 @@ _RULES_REGISTRY: Dict[str, RuleExplanation] = {
             "print(os.getcwd())\n"
         ),
         remediated_example=(
-            "import os\n"
-            "from pathlib import Path\n\n"
-            "print(os.getcwd())\n"
+            "import os\nfrom pathlib import Path\n\nprint(os.getcwd())\n"
         ),
         remediation_details=(
             "PyCleaner cleanly removes the unused alias or entire import line without altering "
@@ -93,10 +89,7 @@ _RULES_REGISTRY: Dict[str, RuleExplanation] = {
             "def public_api(val: int) -> int:\n"
             "    return val + 1\n"
         ),
-        remediated_example=(
-            "def public_api(val: int) -> int:\n"
-            "    return val + 1\n"
-        ),
+        remediated_example=("def public_api(val: int) -> int:\n    return val + 1\n"),
         remediation_details=(
             "PyCleaner identifies dead private callables across the project graph and prunes them, "
             "while respecting framework entry points (e.g. pytest hooks, FastAPI routes, and dataclass fields)."
@@ -119,7 +112,7 @@ _RULES_REGISTRY: Dict[str, RuleExplanation] = {
         ),
         remediated_example=(
             "def get_user(db_cursor, username: str):\n"
-            "    query = \"SELECT * FROM users WHERE username = %s\"\n"
+            '    query = "SELECT * FROM users WHERE username = %s"\n'
             "    db_cursor.execute(query, (username,))\n"
         ),
         remediation_details=(
@@ -140,12 +133,12 @@ _RULES_REGISTRY: Dict[str, RuleExplanation] = {
         vulnerable_example=(
             "import subprocess\n\n"
             "def ping_host(host: str):\n"
-            "    subprocess.run(f\"ping -c 1 {host}\", shell=True)  # SEC002\n"
+            '    subprocess.run(f"ping -c 1 {host}", shell=True)  # SEC002\n'
         ),
         remediated_example=(
             "import subprocess\n\n"
             "def ping_host(host: str):\n"
-            "    subprocess.run([\"ping\", \"-c\", \"1\", host], shell=False, check=True)\n"
+            '    subprocess.run(["ping", "-c", "1", host], shell=False, check=True)\n'
         ),
         remediation_details=(
             "Pass command arguments strictly as a list of strings and set `shell=False`. "
@@ -219,15 +212,10 @@ _RULES_REGISTRY: Dict[str, RuleExplanation] = {
             "that prevents Python from compiling the file (`SyntaxError`)."
         ),
         vulnerable_example=(
-            "items = [\n"
-            "    {'id': 1, 'name': 'test'\n"
-            "print('hello')\n"
+            "items = [\n    {'id': 1, 'name': 'test'\nprint('hello')\n"
         ),
         remediated_example=(
-            "items = [\n"
-            "    {'id': 1, 'name': 'test'}\n"
-            "]\n"
-            "print('hello')\n"
+            "items = [\n    {'id': 1, 'name': 'test'}\n]\nprint('hello')\n"
         ),
         remediation_details=(
             "PyCleaner's Syntax Healer uses token-stream stack analysis to detect unclosed delimiters "
@@ -244,13 +232,9 @@ _RULES_REGISTRY: Dict[str, RuleExplanation] = {
             "(e.g. assigning a `str` to an `int`), violating static type contracts."
         ),
         vulnerable_example=(
-            "count: int = 0\n"
-            "count = 'none'  # TYPE001: incompatible assignment\n"
+            "count: int = 0\ncount = 'none'  # TYPE001: incompatible assignment\n"
         ),
-        remediated_example=(
-            "count: int | None = 0\n"
-            "count = None\n"
-        ),
+        remediated_example=("count: int | None = 0\ncount = None\n"),
         remediation_details=(
             "Update variable type annotations to represent the full union of allowable states, or "
             "convert the assigned value to the expected type."
@@ -328,7 +312,7 @@ _RULES_REGISTRY: Dict[str, RuleExplanation] = {
 }
 
 
-def get_explanation(code_or_topic: str) -> Optional[RuleExplanation]:
+def get_explanation(code_or_topic: str) -> RuleExplanation | None:
     """Retrieves the explanation for a given rule code or alias."""
     key = code_or_topic.strip().upper()
     return _RULES_REGISTRY.get(key)
