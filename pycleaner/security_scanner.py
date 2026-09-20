@@ -245,7 +245,9 @@ class _DangerousCallDetector(ast.NodeVisitor):
         return False
 
     def _add_finding(self, finding: SecurityFinding) -> None:
-        if not self._is_suppressed(finding.lineno, finding.category, finding.end_lineno):
+        if not self._is_suppressed(
+            finding.lineno, finding.category, finding.end_lineno
+        ):
             self.findings.append(finding)
 
     def visit_Call(self, node: ast.Call) -> None:

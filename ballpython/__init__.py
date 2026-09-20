@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-import pycleaner
-from pycleaner import *
+from typing import Any
 
-__version__ = pycleaner.__version__
-__all__ = pycleaner.__all__
+import pycleaner
+from pycleaner import __all__ as __all__
+from pycleaner import __version__ as __version__
+
+
+def __getattr__(name: str) -> Any:
+    return getattr(pycleaner, name)

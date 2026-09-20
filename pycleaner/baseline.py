@@ -54,7 +54,7 @@ class BaselineManager:
             data = json.loads(self.baseline_path.read_text(encoding="utf-8"))
             fingerprints = data.get("fingerprints", [])
             return {
-                fp.get("hash")
+                str(fp["hash"])
                 for fp in fingerprints
                 if isinstance(fp, dict) and fp.get("hash")
             }

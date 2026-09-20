@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
-
-import pytest
 
 from pycleaner.pipeline import CleanPipeline, PipelineOptions
 from pycleaner.verifier import VerificationTier

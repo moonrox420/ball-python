@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
-
-import pytest
 
 from pycleaner.cache import (
     ContentAddressableCache,
-    compute_content_hash,
     extract_file_dependencies,
 )
 from pycleaner.pipeline import CleanPipeline, PipelineOptions
-from pycleaner.verifier import VerificationTier
 
 
 def test_content_addressable_cache_basics(tmp_path: Path) -> None:

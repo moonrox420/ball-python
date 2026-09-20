@@ -318,7 +318,7 @@ class _NestingDepthCounter(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self._function_depth += 1
         if self._function_depth == 1:
-            # Entry function being scored — walk its body normally.
+            # Entry function being scored - walk its body normally.
             self.generic_visit(node)
         # A nested def starts counting from its own zero depth in its own
         # report entry; it must not extend the enclosing function's depth.

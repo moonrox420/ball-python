@@ -346,6 +346,12 @@ class _ProjectScanState:
         self.exports.update(ref_collector.all_exports)
         self.decorated.update(ref_collector.decorated_names)
 
+        # In __init__.py files, all module-level non-private definitions represent public package exports
+        if py_file.name == "__init__.py":
+            for name, kind, lineno, end_lineno, ctx in def_collector.definitions:
+                if ctx == "<module>" and not name.startswith("_"):
+                    self.exports.add(name)
+
         unreachable = _UnreachableCodeDetector(filepath_str, content.splitlines())
         unreachable.visit(tree)
         self.unreachable.extend(unreachable.items)
@@ -532,7 +538,9 @@ class DeadCodeDetector:
     def _is_name_exempt(self, name: str) -> bool:
         if name in self.PROTECTED_NAMES:
             return True
-        exempt_prefixes = ("_", "test_", "Test", "visit_")
+        if name == "_" or (name.startswith("__") and name.endswith("__")):
+            return True
+        exempt_prefixes = ("test_", "Test", "visit_")
         return name.startswith(exempt_prefixes) or name == "generic_visit"
 
     def _should_skip(

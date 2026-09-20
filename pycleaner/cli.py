@@ -40,7 +40,6 @@ from pycleaner.verifier import CounterExample, ProofReceipt, VerificationTier
 
 try:
     from rich.console import Console
-    from rich.panel import Panel
     from rich.progress import (
         BarColumn,
         Progress,
@@ -714,17 +713,17 @@ def _report_file_modifications(
     action = "Cleaned" if apply_changes else "Would modify"
     print_msg(f"[green]{action}:[/green] {py_file.name}")
     for repair in result.syntax_repairs:
-        print_msg(f"  • Syntax: {repair}", style="cyan")
+        print_msg(f"  - Syntax: {repair}", style="cyan")
     for mod in result.modernize_transforms:
-        print_msg(f"  • Modernize: {mod}", style="green")
+        print_msg(f"  - Modernize: {mod}", style="green")
     for dc in result.dead_code_pruned:
-        print_msg(f"  • Dead-code: {dc}", style="yellow")
+        print_msg(f"  - Dead-code: {dc}", style="yellow")
     for imp in result.resolved_imports:
-        print_msg(f"  • Import: {imp}", style="magenta")
+        print_msg(f"  - Import: {imp}", style="magenta")
     if result.lint_changed:
-        print_msg("  • Lint: fixed errors and pruned unused imports", style="blue")
+        print_msg("  - Lint: fixed errors and pruned unused imports", style="blue")
     if result.format_changed:
-        print_msg("  • Format: applied PEP 8 formatting", style="blue")
+        print_msg("  - Format: applied PEP 8 formatting", style="blue")
 
 
 def _accumulate_result(
@@ -750,11 +749,11 @@ def _accumulate_result(
     elif result.verification_tier == VerificationTier.TIER_C_REFUSED:
         if not is_json:
             print_msg(
-                f"[bold red]Refused (Tier C):[/bold red] {py_file.name} — transformation falsified by differential fuzzing; rolled back!"
+                f"[bold red]Refused (Tier C):[/bold red] {py_file.name} - transformation falsified by differential fuzzing; rolled back!"
             )
             for ce in result.refused_changes:
                 print_msg(
-                    f"  • {ce.callable_name} diverged on args={ce.arguments} kwargs={ce.keyword_arguments}"
+                    f"  - {ce.callable_name} diverged on args={ce.arguments} kwargs={ce.keyword_arguments}"
                 )
                 print_msg(
                     f"    original={ce.original_result or ce.original_error} vs transformed={ce.transformed_result or ce.transformed_error} (seed {ce.seed})"
@@ -1022,15 +1021,15 @@ def _cmd_fix(
         if not is_json:
             print_msg("\n[bold cyan]Verification Receipts (Trust Ladder):[/bold cyan]")
             print_msg(
-                f"  [bold green]• Proven (Tier A):[/bold green] {total_proven_callables} callable(s) invariant-preserving across {pipeline.proof_iterations} input(s)"
+                f"  [bold green]- Proven (Tier A):[/bold green] {total_proven_callables} callable(s) invariant-preserving across {pipeline.proof_iterations} input(s)"
             )
             if state.suggested_count > 0:
                 print_msg(
-                    f"  [yellow]• Suggested (Tier B):[/yellow] {state.suggested_count} module(s) (not isolated for dynamic fuzzing)"
+                    f"  [yellow]- Suggested (Tier B):[/yellow] {state.suggested_count} module(s) (not isolated for dynamic fuzzing)"
                 )
             if total_refused_callables > 0:
                 print_msg(
-                    f"  [bold red]• Refused (Tier C):[/bold red] {total_refused_callables} transformation(s) diverged; rolled back"
+                    f"  [bold red]- Refused (Tier C):[/bold red] {total_refused_callables} transformation(s) diverged; rolled back"
                 )
 
         output_report_path = getattr(
@@ -1098,20 +1097,20 @@ def _cmd_fix(
             )
             if tolerated:
                 print_msg(
-                    f"  • Baseline tolerated: [yellow]{len(tolerated)}[/yellow] existing issue(s)"
+                    f"  - Baseline tolerated: [yellow]{len(tolerated)}[/yellow] existing issue(s)"
                 )
             if new_debt:
                 print_msg(
-                    f"  • [bold red]Ratchet Violation:[/bold red] {len(new_debt)} new technical debt issue(s) detected!"
+                    f"  - [bold red]Ratchet Violation:[/bold red] {len(new_debt)} new technical debt issue(s) detected!"
                 )
                 for nd in new_debt:
                     print_msg(
-                        f"    [red]• [X] {nd.rule} at {nd.file}:{nd.line} ({nd.symbol})[/red]"
+                        f"    [red]- [X] {nd.rule} at {nd.file}:{nd.line} ({nd.symbol})[/red]"
                     )
                 return 1
             else:
                 print_msg(
-                    "  • [bold green]Ratchet Passed:[/bold green] 0 new technical debt issues introduced."
+                    "  - [bold green]Ratchet Passed:[/bold green] 0 new technical debt issues introduced."
                 )
         elif new_debt:
             return 1
@@ -1223,9 +1222,9 @@ def _cmd_baseline(
     manager = BaselineManager(output_path)
     saved_file = manager.save_baseline(fingerprints, root_dir)
 
-    print_msg(f"\n[bold green]Baseline successfully recorded![/bold green]")
-    print_msg(f"  • Issues snapshotted: [bold yellow]{len(fingerprints)}[/bold yellow]")
-    print_msg(f"  • Output file: [bold]{saved_file}[/bold]")
+    print_msg("\n[bold green]Baseline successfully recorded![/bold green]")
+    print_msg(f"  - Issues snapshotted: [bold yellow]{len(fingerprints)}[/bold yellow]")
+    print_msg(f"  - Output file: [bold]{saved_file}[/bold]")
     print_msg(
         "\n[dim]Ratchet Guarantee: Technical debt in this repository is now locked. Run CI with:[/dim]"
     )
@@ -1501,7 +1500,7 @@ def _render_scan_cli_summary(
         print_msg(f"\n  Findings by category: {cat_summary}")
 
     print_msg(
-        f"\n  Total: {report.count} finding(s) — "
+        f"\n  Total: {report.count} finding(s) - "
         f"[red]{report.critical_count} critical[/red], [red]{report.high_count} high[/red]"
     )
     return 1 if report.critical_count > 0 else 0
@@ -1604,7 +1603,7 @@ def _render_complexity_cli_output(
     else:
         for f in violations:
             print_msg(
-                f"  {f.qualified_name} — CC:{f.cyclomatic} Cog:{f.cognitive} Ln:{f.lines} Args:{f.args}"
+                f"  {f.qualified_name} - CC:{f.cyclomatic} Cog:{f.cognitive} Ln:{f.lines} Args:{f.args}"
             )
     print_msg(f"\n  {len(violations)} function(s) exceed threshold(s).")
     return 1
@@ -1661,7 +1660,7 @@ def _render_dead_code_kind_group(
         rel_path = _try_relative(item.filepath, target_base)
         conf_tag = f" [{item.confidence}]" if item.confidence != "high" else ""
         print_msg(
-            f"    L{item.lineno} {rel_path}: {item.name} — {item.reason}{conf_tag}"
+            f"    L{item.lineno} {rel_path}: {item.name} - {item.reason}{conf_tag}"
         )
     if len(kind_items) > 20:
         print_msg(f"    ... and {len(kind_items) - 20} more")
@@ -1781,7 +1780,7 @@ def _render_types_cli_summary(
         for f in report.findings:
             rel = _try_relative(f.filepath, target_base)
             print_msg(
-                f"  [{f.severity.upper()}] {rel}:{f.lineno} — {f.message} (expected {f.expected_type}, got {f.actual_type})"
+                f"  [{f.severity.upper()}] {rel}:{f.lineno} - {f.message} (expected {f.expected_type}, got {f.actual_type})"
             )
 
     print_msg(f"\n  Total: {report.count} type finding(s) detected.")

@@ -40,15 +40,18 @@ class _AnnotationTransformer(ast.NodeTransformer):
         "Type": "type",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, typing_imports: set[str] | None = None) -> None:
         self.changed = False
         self.transformations: list[str] = []
+        self.typing_imports = typing_imports if typing_imports is not None else set()
 
     def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
         self.generic_visit(node)
         name: str | None = None
         if isinstance(node.value, ast.Name):
-            name = node.value.id
+            # Only rewrite bare names if they were imported from typing or if typing imports exist
+            if not self.typing_imports or node.value.id in self.typing_imports:
+                name = node.value.id
         elif (
             isinstance(node.value, ast.Attribute)
             and isinstance(node.value.value, ast.Name)
@@ -188,12 +191,60 @@ class Modernizer:
                 isinstance(node, ast.Compare)
                 and len(node.ops) == 1
                 and len(node.comparators) == 1
+                and node.end_lineno is not None
+                and node.end_col_offset is not None
             ):
                 op = node.ops[0]
                 comparator = node.comparators[0]
-                if isinstance(comparator, ast.Constant) and (
-                    comparator.value is None or isinstance(comparator.value, bool)
+                # Only modernize explicit None comparisons (never bool comparisons, which break vectorized/ORM masks)
+                if isinstance(comparator, ast.Constant) and comparator.value is None:
+                    if isinstance(op, ast.Eq):
+                        replacement_op = "is"
+                        transforms.append("Modernized '== None' to 'is None'")
+                    elif isinstance(op, ast.NotEq):
+                        replacement_op = "is not"
+                        transforms.append("Modernized '!= None' to 'is not None'")
+                    else:
+                        continue
+
+                    left_unparsed = ast.unparse(node.left)
+                    new_expr = f"{left_unparsed} {replacement_op} None"
+                    edits.append(
+                        (
+                            node.lineno,
+                            node.col_offset,
+                            node.end_lineno,
+                            node.end_col_offset,
+                            new_expr,
+                        )
+                    )
+                elif isinstance(node.left, ast.Constant) and node.left.value is None:
+                    if isinstance(op, ast.Eq):
+                        replacement_op = "is"
+                        transforms.append("Modernized 'None ==' to 'is None'")
+                    elif isinstance(op, ast.NotEq):
+                        replacement_op = "is not"
+                        transforms.append("Modernized 'None !=' to 'is not None'")
+                    else:
+                        continue
+
+                    comp_unparsed = ast.unparse(comparator)
+                    new_expr = f"{comp_unparsed} {replacement_op} None"
+                    edits.append(
+                        (
+                            node.lineno,
+                            node.col_offset,
+                            node.end_lineno,
+                            node.end_col_offset,
+                            new_expr,
+                        )
+                    )
+                elif (
+                    isinstance(comparator, ast.Constant)
+                    and isinstance(comparator.value, bool)
+                    and isinstance(node.left, ast.Name)
                 ):
+                    # Only modernize simple scalar identifier bool comparisons (never subscripts, attributes, or calls)
                     val = comparator.value
                     if isinstance(op, ast.Eq):
                         replacement_op = "is"
@@ -225,6 +276,12 @@ class Modernizer:
                 idx = lineno - 1
                 line = lines[idx]
                 lines[idx] = line[:col_offset] + new_text + line[end_col_offset:]
+            elif lineno < end_lineno:
+                start_idx = lineno - 1
+                end_idx = end_lineno - 1
+                prefix = lines[start_idx][:col_offset]
+                suffix = lines[end_idx][end_col_offset:]
+                lines[start_idx : end_idx + 1] = [prefix + new_text + suffix]
 
         return "".join(lines), transforms
 
@@ -267,14 +324,27 @@ class Modernizer:
 
         lines = source.splitlines(keepends=True)
         edits: list[tuple[int, int, int, int, str]] = []
-        transformer = _AnnotationTransformer()
+
+        typing_imports: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "typing":
+                for alias in node.names:
+                    if alias.name == "*":
+                        typing_imports.update(
+                            _AnnotationTransformer._PEP_585_MAP.keys()
+                        )
+                        typing_imports.update({"Optional", "Union"})
+                    else:
+                        typing_imports.add(alias.asname or alias.name)
+
+        transformer = _AnnotationTransformer(typing_imports=typing_imports)
 
         def process_annotation(node: ast.AST | None) -> None:
-            if node is None:
+            if not isinstance(node, ast.expr):
                 return
-            if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
+            if node.end_lineno is None or node.end_col_offset is None:
                 return
-            sub = _AnnotationTransformer()
+            sub = _AnnotationTransformer(typing_imports=typing_imports)
             new_node = sub.visit(node)
             if sub.changed:
                 transformer.changed = True
@@ -313,6 +383,12 @@ class Modernizer:
                 idx = lineno - 1
                 line = lines[idx]
                 lines[idx] = line[:col_offset] + new_text + line[end_col_offset:]
+            elif lineno < end_lineno:
+                start_idx = lineno - 1
+                end_idx = end_lineno - 1
+                prefix = lines[start_idx][:col_offset]
+                suffix = lines[end_idx][end_col_offset:]
+                lines[start_idx : end_idx + 1] = [prefix + new_text + suffix]
 
         res = "".join(lines)
 

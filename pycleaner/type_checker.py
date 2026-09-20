@@ -24,40 +24,74 @@ from pycleaner.typeshed_resolver import TypeshedResolver
 class PyType:
     """Base algebraic type representation."""
 
-    def is_assignable_to(self, target: PyType) -> bool:
+    def is_assignable_to(
+        self,
+        target: PyType,
+        class_hierarchy: dict[str, list[str]] | None = None,
+    ) -> bool:
         """Check if this type can be assigned to target type."""
         if isinstance(target, AnyType) or isinstance(self, AnyType) or target == self:
             return True
+        if (
+            isinstance(self, CustomClassType)
+            and isinstance(target, CustomClassType)
+            and class_hierarchy
+            and self._is_subclass(self.name, target.name, class_hierarchy)
+        ):
+            return True
         if isinstance(target, UnionType):
-            return self._assignable_to_union(target)
+            return self._assignable_to_union(target, class_hierarchy)
         if isinstance(self, UnionType):
-            return self._union_assignable_to(target)
+            return self._union_assignable_to(target, class_hierarchy)
         if isinstance(target, CustomClassType) and self._check_custom_target(target):
             return True
         if isinstance(self, CustomClassType) and self._check_custom_source(target):
             return True
         return self._check_numeric_promotions(target)
 
-    def _assignable_to_union(self, target: PyType) -> bool:
-        types = getattr(target, "types", [])
-        for u in types:
-            if self.is_assignable_to(u):
+    @staticmethod
+    def _is_subclass(
+        child: str,
+        parent: str,
+        class_hierarchy: dict[str, list[str]],
+        visited: set[str] | None = None,
+    ) -> bool:
+        if child == parent:
+            return True
+        if visited is None:
+            visited = set()
+        if child in visited:
+            return False
+        visited.add(child)
+        for base in class_hierarchy.get(child, []):
+            if PyType._is_subclass(base, parent, class_hierarchy, visited):
                 return True
         return False
 
-    def _union_assignable_to(self, target: PyType) -> bool:
+    def _assignable_to_union(
+        self, target: PyType, class_hierarchy: dict[str, list[str]] | None = None
+    ) -> bool:
+        types = getattr(target, "types", [])
+        for u in types:
+            if self.is_assignable_to(u, class_hierarchy):
+                return True
+        return False
+
+    def _union_assignable_to(
+        self, target: PyType, class_hierarchy: dict[str, list[str]] | None = None
+    ) -> bool:
         types = getattr(self, "types", [])
         non_none = [u for u in types if not isinstance(u, NoneType)]
         if non_none:
             all_match = True
             for u in non_none:
-                if not u.is_assignable_to(target):
+                if not u.is_assignable_to(target, class_hierarchy):
                     all_match = False
                     break
             if all_match:
                 return True
         for u in types:
-            if not u.is_assignable_to(target):
+            if not u.is_assignable_to(target, class_hierarchy):
                 return False
         return True
 
@@ -183,10 +217,12 @@ class ListType(PyType):
     def __init__(self, item_type: PyType) -> None:
         self.item_type = item_type
 
-    def is_assignable_to(self, target: PyType) -> bool:
+    def is_assignable_to(
+        self, target: PyType, class_hierarchy: dict[str, list[str]] | None = None
+    ) -> bool:
         if _is_collection_assignable(self.item_type, target):
             return True
-        return super().is_assignable_to(target)
+        return super().is_assignable_to(target, class_hierarchy)
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, ListType) and self.item_type == other.item_type
@@ -199,10 +235,12 @@ class SetType(PyType):
     def __init__(self, item_type: PyType) -> None:
         self.item_type = item_type
 
-    def is_assignable_to(self, target: PyType) -> bool:
+    def is_assignable_to(
+        self, target: PyType, class_hierarchy: dict[str, list[str]] | None = None
+    ) -> bool:
         if _is_collection_assignable(self.item_type, target):
             return True
-        return super().is_assignable_to(target)
+        return super().is_assignable_to(target, class_hierarchy)
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, SetType) and self.item_type == other.item_type
@@ -216,20 +254,22 @@ class DictType(PyType):
         self.key_type = key_type
         self.value_type = value_type
 
-    def is_assignable_to(self, target: PyType) -> bool:
+    def is_assignable_to(
+        self, target: PyType, class_hierarchy: dict[str, list[str]] | None = None
+    ) -> bool:
         if isinstance(target, AnyType):
             return True
         if isinstance(target, DictType):
             return self.key_type.is_assignable_to(
-                target.key_type
-            ) and self.value_type.is_assignable_to(target.value_type)
+                target.key_type, class_hierarchy
+            ) and self.value_type.is_assignable_to(target.value_type, class_hierarchy)
         if isinstance(target, CustomClassType) and target.name in (
             "dict",
             "Dict",
             "Mapping",
         ):
             return True
-        return super().is_assignable_to(target)
+        return super().is_assignable_to(target, class_hierarchy)
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -418,6 +458,7 @@ class _FileContext:
     local_functions: dict[str, tuple[dict[str, PyType], PyType]] = field(
         default_factory=dict
     )
+    class_hierarchy: dict[str, list[str]] = field(default_factory=dict)
 
 
 class TypeChecker:
@@ -439,6 +480,20 @@ class TypeChecker:
             return []
 
         return self.check_ast(tree, filepath=str(path), source=content)
+
+    @staticmethod
+    def _collect_class_hierarchy(tree: ast.Module) -> dict[str, list[str]]:
+        hierarchy: dict[str, list[str]] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                bases: list[str] = []
+                for b in node.bases:
+                    if isinstance(b, ast.Name):
+                        bases.append(b.id)
+                    elif isinstance(b, ast.Attribute):
+                        bases.append(b.attr)
+                hierarchy[node.name] = bases
+        return hierarchy
 
     @staticmethod
     def _collect_local_signatures(
@@ -473,6 +528,7 @@ class TypeChecker:
             filepath=filepath,
             source_lines=source.splitlines() if source else [],
             local_functions=self._collect_local_signatures(tree),
+            class_hierarchy=self._collect_class_hierarchy(tree),
         )
 
         for node in ast.walk(tree):
@@ -548,14 +604,16 @@ class TypeChecker:
             return []
 
         findings: list[TypeFinding] = []
+        has_return = False
         for child in ast.walk(func):
             if not isinstance(child, ast.Return):
                 continue
             if self._is_nested_in_other_func(child, func):
                 continue
 
+            has_return = True
             actual_type = self._infer_expr_type(child.value, scope, ctx.local_functions)
-            if not actual_type.is_assignable_to(declared_return):
+            if not actual_type.is_assignable_to(declared_return, ctx.class_hierarchy):
                 snippet = (
                     ctx.source_lines[child.lineno - 1]
                     if 0 <= child.lineno - 1 < len(ctx.source_lines)
@@ -572,6 +630,43 @@ class TypeChecker:
                         message=(
                             f"Incompatible return type: function '{func.name}' declared to return "
                             f"'{declared_return}' but returned '{actual_type}'"
+                        ),
+                        severity="ERROR",
+                        code_snippet=snippet.strip(),
+                    )
+                )
+
+        # Check for missing return paths if declared return is non-None/non-Any
+        if (
+            has_return
+            and not isinstance(declared_return, (AnyType, NoneType))
+            and not (
+                isinstance(declared_return, UnionType)
+                and any(
+                    isinstance(t, NoneType)
+                    for t in getattr(declared_return, "types", [])
+                )
+            )
+        ):
+            last_stmt = func.body[-1] if func.body else None
+            ends_with_terminal = isinstance(last_stmt, (ast.Return, ast.Raise))
+            if not ends_with_terminal:
+                snippet = (
+                    ctx.source_lines[func.lineno - 1]
+                    if 0 <= func.lineno - 1 < len(ctx.source_lines)
+                    else ""
+                )
+                findings.append(
+                    TypeFinding(
+                        filepath=ctx.filepath,
+                        lineno=func.lineno,
+                        column=func.col_offset,
+                        symbol=func.name,
+                        expected_type=str(declared_return),
+                        actual_type="None",
+                        message=(
+                            f"Missing return path: function '{func.name}' declared to return "
+                            f"'{declared_return}' can fall through without returning a value"
                         ),
                         severity="ERROR",
                         code_snippet=snippet.strip(),
@@ -613,7 +708,7 @@ class TypeChecker:
 
         actual_type = self._infer_expr_type(node.value, {}, ctx.local_functions)
         if isinstance(actual_type, AnyType) or actual_type.is_assignable_to(
-            declared_type
+            declared_type, ctx.class_hierarchy
         ):
             return []
 
@@ -768,7 +863,9 @@ class TypeChecker:
                 continue
 
             actual = self._infer_expr_type(arg_expr, scope, ctx.local_functions)
-            if isinstance(actual, AnyType) or actual.is_assignable_to(expected):
+            if isinstance(actual, AnyType) or actual.is_assignable_to(
+                expected, ctx.class_hierarchy
+            ):
                 continue
 
             findings.append(

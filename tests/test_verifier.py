@@ -1,5 +1,3 @@
-import pytest
-
 from pycleaner.verifier import (
     IsolatedDifferentialVerifier,
     VerificationTier,

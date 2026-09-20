@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import ClassVar, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 
 @runtime_checkable

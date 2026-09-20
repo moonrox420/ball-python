@@ -327,7 +327,7 @@ class SyntaxHealer:
         pointer_indent = " " * max(0, offset - 1)
 
         diagnostic_lines = [
-            f"❌ SyntaxError in {filename}:{lineno}:{offset}",
+            f"[!] SyntaxError in {filename}:{lineno}:{offset}",
             f"   --> {filename}:{lineno}:{offset}",
             "    |",
             f"{lineno:3d} | {error_line}",
@@ -525,6 +525,7 @@ class SyntaxHealer:
 
     def _fix_missing_colons(self, code: str) -> tuple[str, int]:
         """Detect compound statement headers without trailing colons and append them."""
+        tokens: list[tokenize.TokenInfo] | None
         try:
             tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
         except tokenize.TokenError:
@@ -561,8 +562,8 @@ class SyntaxHealer:
             return None
 
     @staticmethod
-    def _is_standalone_assignment(chars: Sequence[str], i: int, depth: int) -> bool:
-        if chars[i] != "=" or depth != 0:
+    def _is_standalone_assignment(chars: Sequence[str], i: int, in_call: bool) -> bool:
+        if chars[i] != "=" or in_call:
             return False
         prev_c = chars[i - 1] if i > 0 else ""
         next_c = chars[i + 1] if i + 1 < len(chars) else ""
@@ -581,7 +582,7 @@ class SyntaxHealer:
     @classmethod
     def _replace_condition_equals(cls, condition: str) -> tuple[str, int]:
         chars = list(condition)
-        depth = 0
+        call_bracket_stack: list[bool] = []
         in_s = False
         in_d = False
         escaped = False
@@ -596,12 +597,24 @@ class SyntaxHealer:
             elif in_s or in_d or c in ("'", '"'):
                 in_s, in_d = cls._update_quote_flag(c, in_s, in_d)
             elif c in "([{":
-                depth += 1
+                prev_non_ws = ""
+                for j in range(i - 1, -1, -1):
+                    if not chars[j].isspace():
+                        prev_non_ws = chars[j]
+                        break
+                is_call_or_subscript = bool(
+                    prev_non_ws
+                    and (prev_non_ws.isalnum() or prev_non_ws in ("_", ")", "]"))
+                )
+                call_bracket_stack.append(is_call_or_subscript)
             elif c in ")]}":
-                depth = max(0, depth - 1)
-            elif cls._is_standalone_assignment(chars, i, depth):
-                chars[i] = "=="
-                count += 1
+                if call_bracket_stack:
+                    call_bracket_stack.pop()
+            else:
+                in_call = any(call_bracket_stack)
+                if cls._is_standalone_assignment(chars, i, in_call):
+                    chars[i] = "=="
+                    count += 1
             i += 1
         return "".join(chars), count
 

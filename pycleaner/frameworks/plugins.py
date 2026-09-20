@@ -361,4 +361,3 @@ class PyTorchPlugin:
         tree: ast.AST,
     ) -> bool:
         return name in self._PROTECTED_METHODS
-

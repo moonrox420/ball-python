@@ -59,7 +59,6 @@ class DependencyAuditor:
         "Bio": "biopython",
         "OpenGL": "PyOpenGL",
         "attr": "attrs",
-        "google": "protobuf",
         # High-frequency PyPI packages
         "nmap": "python-nmap",
         "dns": "dnspython",
@@ -77,6 +76,52 @@ class DependencyAuditor:
         "playwright": "playwright",
     }
 
+    def _find_venv_site_packages(self) -> Path | None:
+        """Locate site-packages directory inside project virtual environment."""
+        for venv_name in (".venv", "venv", "env"):
+            candidate = self.root_dir / venv_name
+            if not candidate.is_dir():
+                continue
+            win_site = candidate / "Lib" / "site-packages"
+            if win_site.is_dir():
+                return win_site
+            lib_dir = candidate / "lib"
+            if lib_dir.is_dir():
+                for py_dir in lib_dir.glob("python*"):
+                    site = py_dir / "site-packages"
+                    if site.is_dir():
+                        return site
+        return None
+
+    def _load_distributions(self) -> dict[str, list[str]]:
+        """Load distribution mappings from project virtual environment or host environment."""
+        dists: dict[str, list[str]] = {}
+        try:
+            dists.update(importlib.metadata.packages_distributions())
+        except AttributeError:
+            pass
+
+        site_packages = self._find_venv_site_packages()
+        if site_packages and site_packages.is_dir():
+            try:
+                for dist_info in site_packages.glob("*.dist-info"):
+                    dist_name = dist_info.name.split("-")[0]
+                    top_level_file = dist_info / "top_level.txt"
+                    if top_level_file.is_file():
+                        try:
+                            for top_mod in top_level_file.read_text(
+                                encoding="utf-8", errors="ignore"
+                            ).splitlines():
+                                top_mod = top_mod.strip()
+                                if top_mod:
+                                    dists.setdefault(top_mod, []).insert(0, dist_name)
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+
+        return dists
+
     def __init__(
         self, root_dir: str | Path, exclude_patterns: Sequence[str] = ()
     ) -> None:
@@ -84,10 +129,7 @@ class DependencyAuditor:
         self.exclude_patterns = tuple(exclude_patterns)
         self.stdlib_names = set(sys.stdlib_module_names)
         self._last_optional_packages: set[str] = set()
-        try:
-            self.dist_map = importlib.metadata.packages_distributions()
-        except AttributeError:
-            self.dist_map = {}
+        self.dist_map = self._load_distributions()
 
     _KNOWN_DEV_TOOLS: ClassVar[frozenset[str]] = frozenset(
         {
@@ -127,12 +169,18 @@ class DependencyAuditor:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    root_pkg = alias.name.split(".")[0]
-                    imports.add(root_pkg)
+                    parts = alias.name.split(".")
+                    if len(parts) >= 2 and parts[0] in ("google", "azure"):
+                        imports.add(f"{parts[0]}.{parts[1]}")
+                    else:
+                        imports.add(parts[0])
             elif isinstance(node, ast.ImportFrom):
                 if node.level == 0 and node.module:
-                    root_pkg = node.module.split(".")[0]
-                    imports.add(root_pkg)
+                    parts = node.module.split(".")
+                    if len(parts) >= 2 and parts[0] in ("google", "azure"):
+                        imports.add(f"{parts[0]}.{parts[1]}")
+                    else:
+                        imports.add(parts[0])
         return imports
 
     def scan_codebase_imports(
@@ -206,6 +254,13 @@ class DependencyAuditor:
 
     def module_to_distribution(self, module_name: str) -> str:
         """Map a Python import module name to its PyPI distribution package name."""
+        if module_name.startswith("google."):
+            sub = module_name.split(".")[1]
+            return f"google-{sub}"
+        if module_name.startswith("azure."):
+            sub = module_name.split(".")[1]
+            return f"azure-{sub}"
+
         if module_name in self._KNOWN_IMPORT_TO_DIST:
             return self._KNOWN_IMPORT_TO_DIST[module_name]
 

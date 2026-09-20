@@ -235,4 +235,3 @@ class TestSecurityScanner:
         report = scanner.scan_source(source, filename="query.py")
         categories = {f.category for f in report.findings}
         assert "sql-injection" not in categories
-

@@ -20,6 +20,8 @@ from pycleaner.discovery import (
 
 __version__ = "2.0.5"
 __all__ = [
+    "DEFAULT_IGNORED_DIRS",
+    "PROTECTED_FILE_PATTERNS",
     "BaselineFingerprint",
     "BaselineManager",
     "CleanPipeline",
@@ -55,7 +57,10 @@ __all__ = [
     "TypeReport",
     "TypeshedResolver",
     "VerificationTier",
+    "collect_project_python_files",
     "get_explanation",
+    "is_ignored_directory",
+    "is_protected_file",
     "list_rules",
     "load_config",
 ]

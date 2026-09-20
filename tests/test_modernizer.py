@@ -59,7 +59,7 @@ class TestModernizer:
         ast.parse(res.code)
 
     def test_legacy_object_inheritance(self) -> None:
-        source = "class BaseService(object):\n" "    def run(self):\n" "        pass\n"
+        source = "class BaseService(object):\n    def run(self):\n        pass\n"
         modernizer = Modernizer()
         res = modernizer.modernize(source)
         assert res.changed
@@ -76,12 +76,7 @@ class TestModernizer:
         ast.parse(res.code)
 
     def test_future_annotations_placement_with_docstring(self) -> None:
-        source = (
-            '"""Module docstring."""\n'
-            "\n"
-            "def foo(x: List[int]) -> None:\n"
-            "    pass\n"
-        )
+        source = '"""Module docstring."""\n\ndef foo(x: List[int]) -> None:\n    pass\n'
         modernizer = Modernizer()
         res = modernizer.modernize(source)
         assert res.changed

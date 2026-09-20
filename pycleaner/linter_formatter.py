@@ -49,9 +49,10 @@ class _UsageCollector(ast.NodeVisitor):
 
     def visit_Constant(self, node: ast.Constant) -> None:
         if isinstance(node.value, str):
-            # Extract identifier words from string (e.g. forward references like 'Card' or __all__ = ['Card'])
-            for ident in re.findall(r"\b[a-zA-Z_]\w*\b", node.value):
-                self.used_names.add(ident)
+            val = node.value.strip()
+            # Only treat single valid Python identifiers as used names (e.g. forward references like 'Card' or __all__ = ['Card'])
+            if re.fullmatch(r"[a-zA-Z_]\w*", val):
+                self.used_names.add(val)
         self.generic_visit(node)
 
 
@@ -134,8 +135,8 @@ class LinterFormatter:
             proc = subprocess.run(
                 cmd, input=source.encode("utf-8"), capture_output=True, check=False
             )
-            output = proc.stdout.decode("utf-8")
-            stderr = proc.stderr.decode("utf-8").strip()
+            output = proc.stdout.decode("utf-8", errors="replace")
+            stderr = proc.stderr.decode("utf-8", errors="replace").strip()
             diag = [stderr] if stderr else []
             if proc.returncode in (0, 1) and output:
                 return output, output != source, diag
@@ -162,7 +163,7 @@ class LinterFormatter:
                 cmd, input=source.encode("utf-8"), capture_output=True, check=False
             )
             if proc.returncode == 0 and proc.stdout:
-                output = proc.stdout.decode("utf-8")
+                output = proc.stdout.decode("utf-8", errors="replace")
                 if output != source:
                     diagnostics.append("Pruned unused imports using autoflake fallback")
                     return output, True
@@ -182,7 +183,7 @@ class LinterFormatter:
                 check=False,
             )
             if proc.returncode == 0 and proc.stdout:
-                res = proc.stdout.decode("utf-8")
+                res = proc.stdout.decode("utf-8", errors="replace")
                 return res if res != code else None
         except OSError:
             # Fall back to isort Python module or pure-Python import sorter
@@ -264,7 +265,7 @@ class LinterFormatter:
                 cmd, input=source.encode("utf-8"), capture_output=True, check=False
             )
             if proc.returncode == 0:
-                res = proc.stdout.decode("utf-8")
+                res = proc.stdout.decode("utf-8", errors="replace")
                 return res, res != source
         except OSError:
             # Fall back to Black or pure-Python formatter if ruff CLI execution fails
@@ -281,7 +282,7 @@ class LinterFormatter:
                     check=False,
                 )
                 if proc.returncode == 0 and proc.stdout:
-                    res = proc.stdout.decode("utf-8")
+                    res = proc.stdout.decode("utf-8", errors="replace")
                     return res, res != source, ["Formatted with black CLI fallback"]
             except OSError:
                 # Fall back to black module or pure-Python formatter

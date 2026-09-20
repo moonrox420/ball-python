@@ -5,12 +5,9 @@ import unittest
 from pathlib import Path
 
 from pycleaner.discovery import (
-    DEFAULT_IGNORED_DIRS,
     collect_project_python_files,
     is_ignored_directory,
     is_protected_file,
-    load_gitignore_patterns,
-    matches_gitignore,
 )
 
 

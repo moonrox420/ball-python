@@ -82,7 +82,10 @@ class UndefinedSymbolFinder(ast.NodeVisitor):
     def _is_defined(self, name: str) -> bool:
         if name in self.builtin_names:
             return True
-        for scope in reversed(self.scopes):
+        in_function = any(kind == "function" for kind in self.scope_kinds)
+        for scope, kind in zip(reversed(self.scopes), reversed(self.scope_kinds)):
+            if in_function and kind == "class":
+                continue
             if name in scope:
                 return True
         return False
@@ -167,6 +170,13 @@ class UndefinedSymbolFinder(ast.NodeVisitor):
             finally:
                 self._in_annotation = False
 
+        # Defaults are evaluated in enclosing scope at definition time
+        for default in node.args.defaults:
+            self.visit(default)
+        for kw_default in node.args.kw_defaults:
+            if kw_default is not None:
+                self.visit(kw_default)
+
         self.scopes.append(set())
         self.scope_kinds.append("function")
 
@@ -180,6 +190,29 @@ class UndefinedSymbolFinder(ast.NodeVisitor):
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for default in node.args.defaults:
+            self.visit(default)
+        for kw_default in node.args.kw_defaults:
+            if kw_default is not None:
+                self.visit(kw_default)
+
+        self.scopes.append(set())
+        self.scope_kinds.append("function")
+
+        all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+        for arg in all_args:
+            self._current_scope().add(arg.arg)
+        if node.args.vararg:
+            self._current_scope().add(node.args.vararg.arg)
+        if node.args.kwarg:
+            self._current_scope().add(node.args.kwarg.arg)
+
+        self.visit(node.body)
+
+        self.scopes.pop()
+        self.scope_kinds.pop()
+
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value:
             self.visit(node.value)
@@ -192,21 +225,6 @@ class UndefinedSymbolFinder(ast.NodeVisitor):
             self.visit(node.annotation)
         finally:
             self._in_annotation = False
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        self.scopes.append(set())
-        self.scope_kinds.append("function")
-        all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
-        for arg in all_args:
-            self._current_scope().add(arg.arg)
-        if node.args.vararg:
-            self._current_scope().add(node.args.vararg.arg)
-        if node.args.kwarg:
-            self._current_scope().add(node.args.kwarg.arg)
-
-        self.visit(node.body)
-        self.scopes.pop()
-        self.scope_kinds.pop()
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         # PEP 572: an assignment expression's target binds in the nearest

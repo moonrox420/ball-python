@@ -54,7 +54,7 @@ class AstMutator(ast.NodeTransformer):
 
     def visit_Compare(self, node: ast.Compare) -> ast.AST:
         self.generic_visit(node)
-        new_ops = []
+        new_ops: list[ast.cmpop] = []
         for op in node.ops:
             if isinstance(op, ast.Lt):
                 new_ops.append(ast.GtE())

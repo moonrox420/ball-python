@@ -323,8 +323,13 @@ class TaintEngine:
         if not spec:
             return
         for arg in child.args:
-            if isinstance(arg, ast.Name) and arg.id in param_names:
-                summary.param_to_sink[arg.id] = (
+            referenced_params = [
+                n.id
+                for n in ast.walk(arg)
+                if isinstance(n, ast.Name) and n.id in param_names
+            ]
+            for p in referenced_params:
+                summary.param_to_sink[p] = (
                     spec[0],
                     spec[1],
                     getattr(child, "lineno", default_lineno),
@@ -361,10 +366,16 @@ class TaintEngine:
         """Check if an expression immediately calls or accesses a known untrusted source."""
         if isinstance(node, ast.Call):
             call_name = self._resolve_call_name(node.func)
-            if call_name in self.KNOWN_SOURCES or any(
-                call_name.startswith(src) for src in self.KNOWN_SOURCES
+            if (
+                call_name in self.KNOWN_SOURCES
+                or any(call_name.startswith(src) for src in self.KNOWN_SOURCES)
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("read", "readline", "readlines")
+                )
             ):
-                return call_name, getattr(node, "lineno", 0)
+                source_name = call_name or "file.read"
+                return source_name, getattr(node, "lineno", 0)
         elif isinstance(node, ast.Subscript):
             # e.g., sys.argv[1], request.args['q']
             val_name = self._resolve_call_name(node.value)

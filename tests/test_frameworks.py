@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from pycleaner.dead_code_detector import DeadCodeDetector
 
 
@@ -181,4 +179,3 @@ class AppConfig(BaseSettings):
     assert "api_key" not in names_flagged
     assert "model_config" not in names_flagged
     assert "model_post_init" not in names_flagged
-

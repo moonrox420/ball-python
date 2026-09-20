@@ -91,9 +91,9 @@ class TestLinterFormatter(unittest.TestCase):
         )
         self.assertTrue(sort_changed)
         lines = [
-            l.strip()
-            for l in sorted_code.splitlines()
-            if l.strip().startswith("import")
+            line.strip()
+            for line in sorted_code.splitlines()
+            if line.strip().startswith("import")
         ]
         # Stdlib (os, sys) should come before third-party (requests)
         self.assertEqual(lines, ["import os", "import sys", "import requests"])
