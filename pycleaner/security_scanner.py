@@ -196,9 +196,14 @@ class _DangerousCallDetector(ast.NodeVisitor):
             return self.source_lines[lineno - 1].strip()
         return ""
 
-    def _is_suppressed(self, lineno: int, category: str) -> bool:
-        if 1 <= lineno <= len(self.source_lines):
-            line = self.source_lines[lineno - 1]
+    def _is_suppressed(
+        self, lineno: int, category: str, end_lineno: int | None = None
+    ) -> bool:
+        start = max(1, lineno)
+        end = max(start, end_lineno or lineno)
+        max_line = len(self.source_lines)
+        for ln in range(start, min(end + 1, max_line + 1)):
+            line = self.source_lines[ln - 1]
             if "#" in line:
                 comment = line.split("#", 1)[1].strip().lower()
                 if (
@@ -208,21 +213,21 @@ class _DangerousCallDetector(ast.NodeVisitor):
                     or f"ignore[{category.lower()}]" in comment
                 ):
                     return True
-            if lineno > 1:
-                prev_line = self.source_lines[lineno - 2]
-                if prev_line.strip().startswith("#"):
-                    prev_comment = prev_line.strip().lstrip("#").strip().lower()
-                    if (
-                        "nosec" in prev_comment
-                        or "noqa" in prev_comment
-                        or "pycleaner: ignore" in prev_comment
-                        or f"ignore[{category.lower()}]" in prev_comment
-                    ):
-                        return True
+        if start > 1:
+            prev_line = self.source_lines[start - 2]
+            if prev_line.strip().startswith("#"):
+                prev_comment = prev_line.strip().lstrip("#").strip().lower()
+                if (
+                    "nosec" in prev_comment
+                    or "noqa" in prev_comment
+                    or "pycleaner: ignore" in prev_comment
+                    or f"ignore[{category.lower()}]" in prev_comment
+                ):
+                    return True
         return False
 
     def _add_finding(self, finding: SecurityFinding) -> None:
-        if not self._is_suppressed(finding.lineno, finding.category):
+        if not self._is_suppressed(finding.lineno, finding.category, finding.end_lineno):
             self.findings.append(finding)
 
     def visit_Call(self, node: ast.Call) -> None:
