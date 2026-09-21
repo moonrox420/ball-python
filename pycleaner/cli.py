@@ -555,7 +555,12 @@ def _create_printer(console: Any) -> Any:
         else:
             import re
 
-            cleaned = re.sub(r"\[/?[a-z ]*\]", "", msg)
+            cleaned = re.sub(
+                r"(?<!\\)\[/?(?:bold|dim|italic|underline|blink|reverse|strike|black|red|green|yellow|blue|magenta|cyan|white)(?: [a-z]+)*\]",
+                "",
+                msg,
+            )
+            cleaned = cleaned.replace("\\[", "[").replace("\\]", "]")
             print(cleaned)
 
     return print_msg

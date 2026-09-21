@@ -18,7 +18,7 @@ from pycleaner.discovery import (
     is_protected_file,
 )
 
-__version__ = "2.0.5"
+__version__ = "2.1.1"
 __all__ = [
     "DEFAULT_IGNORED_DIRS",
     "PROTECTED_FILE_PATTERNS",
