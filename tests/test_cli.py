@@ -374,6 +374,57 @@ class TestCLI(unittest.TestCase):
             self.assertNotIn("Full Spectrum Analysis & Healing", output)
             self.assertNotIn("Phase 2: Project Dependency Audit", output)
 
+    def test_subcommand_audit_fix_prunes_unused_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            folder = Path(tmp_dir)
+            py_file = folder / "main.py"
+            py_file.write_text("import httpx\n", encoding="utf-8")
+
+            pyproj = folder / "pyproject.toml"
+            pyproj.write_text(
+                "[project]\n"
+                "name = 'demo'\n"
+                "dependencies = [\n"
+                "    'old-unused-pkg>=1.0',\n"
+                "]\n",
+                encoding="utf-8",
+            )
+
+            stdout_buf = io.StringIO()
+            with redirect_stdout(stdout_buf):
+                exit_code = main(["audit", str(folder), "--fix"])
+            output = stdout_buf.getvalue()
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Project dependencies synchronized on disk", output)
+            updated_pyproj = pyproj.read_text(encoding="utf-8")
+            self.assertNotIn("old-unused-pkg", updated_pyproj)
+            self.assertIn("httpx", updated_pyproj)
+
+    def test_subcommand_dead_code_fix_mutates_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            folder = Path(tmp_dir)
+            target = folder / "sample.py"
+            target.write_text(
+                "def test_func():\n"
+                "    try:\n"
+                "        val = 1\n"
+                "    except Exception:\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+
+            stdout_buf = io.StringIO()
+            with redirect_stdout(stdout_buf):
+                exit_code = main(["dead-code", str(folder), "--fix"])
+            output = stdout_buf.getvalue()
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Successfully fixed 1 file(s)", output)
+            healed = target.read_text(encoding="utf-8")
+            self.assertIn("logging.getLogger(__name__).debug", healed)
+            self.assertIn("import logging", healed)
+
 
 if __name__ == "__main__":
     unittest.main()

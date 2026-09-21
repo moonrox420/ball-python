@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import io
+import logging
 import re
 import tokenize
 from collections.abc import Sequence
@@ -695,7 +696,7 @@ class SyntaxHealer:
                         stack.pop()
         except tokenize.TokenError:
             # Incomplete token stream will be healed by delimiter reconstruction
-            pass
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
         return stack
 
     @staticmethod

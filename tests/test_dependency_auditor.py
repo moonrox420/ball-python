@@ -99,6 +99,34 @@ class TestDependencyAuditor(unittest.TestCase):
             updated_reqs = req_file.read_text(encoding="utf-8")
             self.assertNotIn("cipher_snark", updated_reqs)
 
+    def test_dependency_auditor_fixes_pyproject_toml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            code_file = tmp_path / "main.py"
+            code_file.write_text("import httpx\n", encoding="utf-8")
+
+            pyproj = tmp_path / "pyproject.toml"
+            pyproj.write_text(
+                "[project]\n"
+                "name = 'demo'\n"
+                "dependencies = [\n"
+                "    'old-unused-pkg>=1.0',\n"
+                "]\n",
+                encoding="utf-8",
+            )
+
+            auditor = DependencyAuditor(tmp_path)
+            report = auditor.audit(fix=True, prune_unused=True)
+
+            self.assertTrue(report.fixed_requirements)
+            self.assertTrue(report.fixed_pyproject)
+            updated = pyproj.read_text(encoding="utf-8")
+            self.assertIn("httpx", updated)
+            self.assertNotIn("old-unused-pkg", updated)
+            # Verify backup was created
+            backup = tmp_path / "pyproject.toml.bak"
+            self.assertTrue(backup.is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

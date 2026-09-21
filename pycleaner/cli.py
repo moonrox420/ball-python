@@ -158,6 +158,11 @@ def _register_analysis_subparsers(subparsers: Any) -> None:
     audit_p = subparsers.add_parser("audit", help="Audit project dependencies")
     _add_common_args(audit_p)
     audit_p.add_argument(
+        "--fix",
+        action="store_true",
+        help="Auto-fix requirements.txt and pyproject.toml and prune unused packages",
+    )
+    audit_p.add_argument(
         "--fix-deps", action="store_true", help="Auto-fix requirements.txt"
     )
     audit_p.add_argument(
@@ -897,15 +902,13 @@ def _render_audit_terminal_output(
             f"  [red]Missing:[/red] {', '.join(sorted(audit_report.missing_packages))}"
         )
         if not should_fix:
-            print_msg(
-                "  [dim]Tip: Run with -a/--all or --fix-deps to append them[/dim]"
-            )
+            print_msg("  [dim]Tip: Run with -a/--all or --fix to append them[/dim]")
     if audit_report.unused_packages:
         print_msg(
             f"  [yellow]Unused:[/yellow] {', '.join(sorted(audit_report.unused_packages))}"
         )
     if audit_report.fixed_requirements:
-        print_msg("  [green]requirements.txt synchronized.[/green]")
+        print_msg("  [green]Project dependencies synchronized on disk.[/green]")
 
 
 def _run_fix_audit(
@@ -918,8 +921,18 @@ def _run_fix_audit(
 ) -> DependencyAuditReport:
     exclude_patterns = config.exclude if config else ()
     auditor = DependencyAuditor(root_dir, exclude_patterns=exclude_patterns)
-    fix_any = getattr(args, "fix_deps", False) or getattr(args, "fix_all", False)
-    prune_any = getattr(args, "prune_deps", False) or getattr(args, "fix_all", False)
+    fix_any = (
+        getattr(args, "fix_deps", False)
+        or getattr(args, "fix_all", False)
+        or getattr(args, "fix", False)
+        or apply_changes
+    )
+    prune_any = (
+        getattr(args, "prune_deps", False)
+        or getattr(args, "fix_all", False)
+        or getattr(args, "fix", False)
+        or apply_changes
+    )
     should_fix = apply_changes and fix_any
     should_prune = apply_changes and prune_any
     audit_report = auditor.audit(
@@ -1009,6 +1022,12 @@ def _cmd_fix(
         config=config,
         target_files=py_files,
     )
+    if opts.apply_changes and (
+        audit_report.fixed_requirements
+        or getattr(audit_report, "fixed_pyproject", False)
+    ):
+        state.changed_count += 1
+
     print_msg(
         f"\n[bold]Summary: {len(py_files)} inspected, {state.changed_count} updated, {state.error_count} errors.[/bold]"
     )
@@ -1412,8 +1431,10 @@ def _render_audit_cli_output(
         )
     if not audit_report.missing_packages and not audit_report.unused_packages:
         print_msg("  [green]All dependencies clean.[/green]")
-    if audit_report.fixed_requirements:
-        print_msg("  [green]requirements.txt synchronized.[/green]")
+    if audit_report.fixed_requirements or getattr(
+        audit_report, "fixed_pyproject", False
+    ):
+        print_msg("  [green]Project dependencies synchronized on disk.[/green]")
 
     return (
         1
@@ -1427,10 +1448,12 @@ def _cmd_audit(args: argparse.Namespace, config: PyCleanerConfig, print_msg) -> 
     root_dir = find_project_root(args.paths[0] if args.paths else None)
 
     is_check = getattr(args, "check", False)
+    fix_flag = getattr(args, "fix", False) or getattr(args, "fix_deps", False)
+    prune_flag = getattr(args, "fix", False) or getattr(args, "prune_deps", False)
     auditor = DependencyAuditor(root_dir, exclude_patterns=config.exclude)
     audit_report = auditor.audit(
-        fix=getattr(args, "fix_deps", False) and not is_check,
-        prune_unused=getattr(args, "prune_deps", False) and not is_check,
+        fix=fix_flag and not is_check,
+        prune_unused=prune_flag and not is_check,
     )
 
     if getattr(args, "json", False):
@@ -1964,6 +1987,8 @@ def _run_ultimate_phases(
     print_msg(
         "\n[bold blue]Phase 2: Project Dependency Audit & Reconciliation[/bold blue]"
     )
+    args.fix = True
+    args.prune_deps = True
     audit_rc = _cmd_audit(args, config, print_msg)
     print_msg(
         "\n[bold blue]Phase 3: Bidirectional Type Verification & Typeshed Resolution[/bold blue]"
@@ -1981,7 +2006,7 @@ def _run_ultimate_phases(
 def _cmd_ultimate(
     args: argparse.Namespace, config: PyCleanerConfig, print_msg: Any, console: Any
 ) -> int:
-    """The Ultimate Python Tool flagship runner: executes full multi-layer analysis."""
+    """The Ultimate Python Tool flagship runner: executes full multi-layer analysis and automated healing."""
     print_msg(
         "[bold magenta]=== PyCleaner Ultimate: Full Spectrum Analysis & Healing ===[/bold magenta]\n"
     )
@@ -1989,14 +2014,15 @@ def _cmd_ultimate(
         args, config, print_msg, console
     )
     print_msg(
-        "\n[bold blue]Phase 6: Structural Complexity & Dead Code Discovery[/bold blue]"
+        "\n[bold blue]Phase 6: Structural Complexity & Dead Code Discovery & Healing[/bold blue]"
     )
     _cmd_complexity(args, config, print_msg, console)
-    _cmd_dead_code(args, config, print_msg, console)
+    args.fix = True
+    dead_rc = _cmd_dead_code(args, config, print_msg, console)
     print_msg(
         "\n[bold magenta]=== Ultimate Python Tool: Analysis Complete ===[/bold magenta]"
     )
-    return max(fix_rc, audit_rc, type_rc, taint_rc, scan_rc)
+    return max(fix_rc, audit_rc, type_rc, taint_rc, scan_rc, dead_rc)
 
 
 def _collect_file_mtimes(files: Sequence[Path]) -> dict[Path, float]:

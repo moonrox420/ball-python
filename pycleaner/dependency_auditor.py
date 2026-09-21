@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import importlib.metadata
+import logging
 import re
 import shutil
 import sys
@@ -31,6 +32,7 @@ class DependencyAuditReport:
     missing_packages: set[str] = field(default_factory=set)
     unused_packages: set[str] = field(default_factory=set)
     fixed_requirements: bool = False
+    fixed_pyproject: bool = False
     details: list[str] = field(default_factory=list)
 
 
@@ -99,7 +101,7 @@ class DependencyAuditor:
         try:
             dists.update(importlib.metadata.packages_distributions())
         except AttributeError:
-            pass
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
         site_packages = self._find_venv_site_packages()
         if site_packages and site_packages.is_dir():
@@ -116,9 +118,11 @@ class DependencyAuditor:
                                 if top_mod:
                                     dists.setdefault(top_mod, []).insert(0, dist_name)
                         except OSError:
-                            pass
+                            logging.getLogger(__name__).debug(
+                                "Suppressed exception", exc_info=True
+                            )
             except OSError:
-                pass
+                logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
         return dists
 
@@ -226,7 +230,7 @@ class DependencyAuditor:
                     local_mods.add(str(proj_name))
                     local_mods.add(str(proj_name).replace("-", "_"))
             except Exception:
-                pass  # Ignore invalid or non-standard pyproject.toml configuration
+                logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
         # 3. Discover local .py files and subpackages (including PEP 420 namespace packages)
         search_dirs = [self.root_dir]
@@ -331,7 +335,7 @@ class DependencyAuditor:
                                 declared[canon] = dep
                                 optional_pkgs.add(canon)
         except Exception:
-            pass  # Best-effort reading; continue if pyproject.toml is unparseable
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
         return declared, optional_pkgs
 
     def read_declared_dependencies(self) -> dict[str, str]:
@@ -374,7 +378,10 @@ class DependencyAuditor:
 
     @staticmethod
     def _build_audit_details(
-        missing: set[str], unused: set[str], fixed: bool
+        missing: set[str],
+        unused: set[str],
+        fixed_reqs: bool,
+        fixed_pyproj: bool = False,
     ) -> list[str]:
         details: list[str] = []
         if missing:
@@ -385,9 +392,13 @@ class DependencyAuditor:
             details.append(
                 f"Unused dependencies (declared but not imported): {', '.join(sorted(unused))}"
             )
-        if fixed:
+        if fixed_reqs:
             details.append(
                 "Updated requirements.txt successfully (backup saved as requirements.txt.bak)"
+            )
+        if fixed_pyproj:
+            details.append(
+                "Updated pyproject.toml successfully (backup saved as pyproject.toml.bak)"
             )
         return details
 
@@ -397,7 +408,7 @@ class DependencyAuditor:
         prune_unused: bool = False,
         target_files: Sequence[Path] | None = None,
     ) -> DependencyAuditReport:
-        """Audit dependencies and optionally update requirements.txt."""
+        """Audit dependencies and optionally update requirements.txt and pyproject.toml."""
         all_imports = self.scan_codebase_imports(target_files=target_files)
         local_mods = self.identify_local_modules()
 
@@ -414,13 +425,18 @@ class DependencyAuditor:
         )
 
         fixed_reqs = False
+        fixed_pyproj = False
         if fix and (missing_packages or (prune_unused and unused_packages)):
-            fixed_reqs = self._update_requirements(
-                missing_packages, unused_packages if prune_unused else set()
-            )
+            to_remove = unused_packages if prune_unused else set()
+            if (self.root_dir / "pyproject.toml").is_file():
+                fixed_pyproj = self._update_pyproject_toml(missing_packages, to_remove)
+            if (self.root_dir / "requirements.txt").is_file():
+                fixed_reqs = self._update_requirements(missing_packages, to_remove)
+            elif not fixed_pyproj and missing_packages:
+                fixed_reqs = self._update_requirements(missing_packages, set())
 
         details = self._build_audit_details(
-            missing_packages, unused_packages, fixed_reqs
+            missing_packages, unused_packages, fixed_reqs, fixed_pyproj
         )
 
         return DependencyAuditReport(
@@ -429,9 +445,108 @@ class DependencyAuditor:
             required_packages=set(declared.keys()),
             missing_packages=missing_packages,
             unused_packages=unused_packages,
-            fixed_requirements=fixed_reqs,
+            fixed_requirements=fixed_reqs or fixed_pyproj,
+            fixed_pyproject=fixed_pyproj,
             details=details,
         )
+
+    def _update_pyproject_toml(
+        self, missing: set[str], unused_to_remove: set[str]
+    ) -> bool:
+        """Prune unused dependencies and append missing ones in pyproject.toml with safety checks."""
+        pyproject_file = self.root_dir / "pyproject.toml"
+        if not pyproject_file.is_file():
+            return False
+
+        content = pyproject_file.read_text(encoding="utf-8", errors="ignore")
+        remove_canons = {
+            self.canonicalize_name(m.group(1))
+            for u in unused_to_remove
+            if (m := re.match(r"^([a-zA-Z0-9_.-]+)", u))
+        }
+        local_canons = {
+            self.canonicalize_name(m) for m in self.identify_local_modules()
+        }
+        safe_missing = {
+            pkg for pkg in missing if self.canonicalize_name(pkg) not in local_canons
+        }
+
+        if not remove_canons and not safe_missing:
+            return False
+
+        lines = content.splitlines(keepends=True)
+        new_lines: list[str] = []
+        in_dependencies_array = False
+        modified = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            if re.match(r"^dependencies\s*=\s*\[", stripped):
+                if "]" in stripped:
+                    bracket_content = stripped[
+                        stripped.find("[") + 1 : stripped.rfind("]")
+                    ]
+                    items = [
+                        it.strip() for it in bracket_content.split(",") if it.strip()
+                    ]
+                    kept_items: list[str] = []
+                    for item in items:
+                        m = re.search(r'["\']([a-zA-Z0-9_.-]+)', item)
+                        if m and self.canonicalize_name(m.group(1)) in remove_canons:
+                            modified = True
+                            continue
+                        kept_items.append(item)
+                    for sm in sorted(safe_missing):
+                        kept_items.append(f'"{sm}"')
+                        modified = True
+                    indent = line[: len(line) - len(line.lstrip())]
+                    new_lines.append(
+                        f"{indent}dependencies = [{', '.join(kept_items)}]\n"
+                    )
+                    continue
+                else:
+                    in_dependencies_array = True
+                    new_lines.append(line)
+                    continue
+
+            if in_dependencies_array:
+                if "]" in stripped:
+                    in_dependencies_array = False
+                    for sm in sorted(safe_missing):
+                        indent = "    "
+                        new_lines.append(f'{indent}"{sm}",\n')
+                        modified = True
+                    new_lines.append(line)
+                    continue
+
+                pkg_match = re.search(r'["\']([a-zA-Z0-9_.-]+)', stripped)
+                if pkg_match:
+                    canon = self.canonicalize_name(pkg_match.group(1))
+                    if canon in remove_canons:
+                        modified = True
+                        continue
+                new_lines.append(line)
+                continue
+
+            poetry_pkg_match = re.match(r"^([a-zA-Z0-9_.-]+)\s*=", stripped)
+            if poetry_pkg_match:
+                canon = self.canonicalize_name(poetry_pkg_match.group(1))
+                if canon in remove_canons and canon != "python":
+                    modified = True
+                    continue
+
+            new_lines.append(line)
+
+        if modified:
+            backup_file = pyproject_file.with_suffix(".toml.bak")
+            try:
+                shutil.copy2(pyproject_file, backup_file)
+            except OSError:
+                logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
+            pyproject_file.write_text("".join(new_lines), encoding="utf-8")
+            return True
+        return False
 
     def _update_requirements(
         self, missing: set[str], unused_to_remove: set[str]
@@ -445,7 +560,7 @@ class DependencyAuditor:
             try:
                 shutil.copy2(req_file, backup_file)
             except OSError:
-                pass  # Continue if backup creation fails
+                logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
             existing_lines = req_file.read_text(
                 encoding="utf-8", errors="ignore"
             ).splitlines()

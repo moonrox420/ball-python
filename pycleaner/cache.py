@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import logging
 import sqlite3
 import time
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pycleaner.pipeline import CleanResult
+
 from pycleaner.verifier import VerificationTier
 
 
@@ -46,7 +48,7 @@ def extract_file_dependencies(source: str) -> list[str]:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 deps.append(node.module.split(".")[0])
     except SyntaxError:
-        pass  # Best-effort dependency extraction; syntax errors handled downstream
+        logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
     return sorted(set(deps))
 
 

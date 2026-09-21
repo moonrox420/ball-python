@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import io
+import logging
 import re
 import tokenize
 from dataclasses import dataclass, field
@@ -414,7 +415,7 @@ class Modernizer:
             ):
                 insert_idx = getattr(tree.body[0], "end_lineno", 1)
         except SyntaxError:
-            pass  # Fall back to default index if docstring extraction fails
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
         future_stmt = "from __future__ import annotations\n\n"
         if insert_idx < len(lines):

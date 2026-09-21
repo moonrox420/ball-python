@@ -15,6 +15,7 @@ import ast
 import dataclasses
 import enum
 import inspect
+import logging
 import multiprocessing as mp
 import random
 import sys
@@ -211,12 +212,12 @@ def _worker_differential_fuzz(
                 }
             )
         except Exception:
-            pass  # Suppress secondary exceptions if IPC pipe fails to send crash reason
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
     finally:
         try:
             conn.close()
         except Exception:
-            pass  # Best-effort resource cleanup for IPC connection
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
 
 class DeterministicInputSynthesizer:

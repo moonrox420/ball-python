@@ -8,6 +8,7 @@ unreachable code after return/raise/break/continue, and empty pass branches.
 from __future__ import annotations
 
 import ast
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -201,6 +202,199 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _is_pure_expression(node: ast.AST | None) -> bool:
+    """Determine if an AST expression is pure (guaranteed free of side effects)."""
+    if node is None:
+        return True
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.Name):
+        return True
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_is_pure_expression(elt) for elt in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(
+            (k is None or _is_pure_expression(k)) and _is_pure_expression(v)
+            for k, v in zip(node.keys, node.values)
+        )
+    if isinstance(node, ast.UnaryOp):
+        return _is_pure_expression(node.operand)
+    if isinstance(node, ast.BinOp):
+        return _is_pure_expression(node.left) and _is_pure_expression(node.right)
+    if isinstance(node, ast.BoolOp):
+        return all(_is_pure_expression(v) for v in node.values)
+    if isinstance(node, ast.Compare):
+        return _is_pure_expression(node.left) and all(
+            _is_pure_expression(c) for c in node.comparators
+        )
+    if isinstance(node, ast.JoinedStr):
+        for val in node.values:
+            if isinstance(val, ast.FormattedValue) and not _is_pure_expression(
+                val.value
+            ):
+                return False
+        return True
+    if isinstance(node, ast.Lambda):
+        return True
+    return False
+
+
+def _walk_stmts_in_scope(body: list[ast.stmt]) -> list[tuple[ast.stmt, list[ast.stmt]]]:
+    """Yield (stmt, parent_body) for statements within this scope without descending into nested functions/classes."""
+    result: list[tuple[ast.stmt, list[ast.stmt]]] = []
+    for s in body:
+        result.append((s, body))
+        if isinstance(s, (ast.If, ast.While, ast.For, ast.AsyncFor)):
+            result.extend(_walk_stmts_in_scope(s.body))
+            if s.orelse:
+                result.extend(_walk_stmts_in_scope(s.orelse))
+        elif isinstance(s, ast.Try):
+            result.extend(_walk_stmts_in_scope(s.body))
+            for h in s.handlers:
+                result.extend(_walk_stmts_in_scope(h.body))
+            if s.orelse:
+                result.extend(_walk_stmts_in_scope(s.orelse))
+            if s.finalbody:
+                result.extend(_walk_stmts_in_scope(s.finalbody))
+        elif isinstance(s, (ast.With, ast.AsyncWith)):
+            result.extend(_walk_stmts_in_scope(s.body))
+        elif hasattr(ast, "Match") and isinstance(s, ast.Match):
+            for case in s.cases:
+                result.extend(_walk_stmts_in_scope(case.body))
+    return result
+
+
+def _has_logging_import(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "logging":
+                    return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and (
+                node.module == "logging" or node.module.startswith("logging.")
+            ):
+                return True
+    return False
+
+
+def _detect_unused_locals_in_function(
+    func_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    filepath: str,
+) -> list[DeadCodeItem]:
+    items: list[DeadCodeItem] = []
+    args_set: set[str] = set()
+    for a in func_node.args.posonlyargs:
+        args_set.add(a.arg)
+    for a in func_node.args.args:
+        args_set.add(a.arg)
+    for a in func_node.args.kwonlyargs:
+        args_set.add(a.arg)
+    if func_node.args.vararg:
+        args_set.add(func_node.args.vararg.arg)
+    if func_node.args.kwarg:
+        args_set.add(func_node.args.kwarg.arg)
+
+    explicit_globals: set[str] = set()
+    has_dynamic = False
+    loaded_names: set[str] = set()
+
+    for sub in ast.walk(func_node):
+        if isinstance(sub, (ast.Global, ast.Nonlocal)):
+            explicit_globals.update(sub.names)
+        elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+            loaded_names.add(sub.id)
+        elif isinstance(sub, ast.Call):
+            func = sub.func
+            if isinstance(func, ast.Name) and func.id in (
+                "locals",
+                "vars",
+                "eval",
+                "exec",
+            ):
+                has_dynamic = True
+
+    if has_dynamic:
+        return items
+
+    stmts_in_scope = _walk_stmts_in_scope(func_node.body)
+    seen_unused: set[str] = set()
+    for stmt, _ in stmts_in_scope:
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    name = target.id
+                    if (
+                        not name.startswith("_")
+                        and name not in args_set
+                        and name not in explicit_globals
+                        and name not in loaded_names
+                        and name not in seen_unused
+                    ):
+                        seen_unused.add(name)
+                        items.append(
+                            DeadCodeItem(
+                                filepath=filepath,
+                                lineno=target.lineno,
+                                end_lineno=getattr(target, "end_lineno", target.lineno),
+                                name=name,
+                                kind="variable",
+                                reason=f"Local variable '{name}' is assigned in '{func_node.name}' but never used",
+                                confidence="high",
+                            )
+                        )
+                elif isinstance(target, (ast.Tuple, ast.List)):
+                    for elt in target.elts:
+                        if isinstance(elt, ast.Name):
+                            name = elt.id
+                            if (
+                                not name.startswith("_")
+                                and name not in args_set
+                                and name not in explicit_globals
+                                and name not in loaded_names
+                                and name not in seen_unused
+                            ):
+                                seen_unused.add(name)
+                                items.append(
+                                    DeadCodeItem(
+                                        filepath=filepath,
+                                        lineno=elt.lineno,
+                                        end_lineno=getattr(
+                                            elt, "end_lineno", elt.lineno
+                                        ),
+                                        name=name,
+                                        kind="variable",
+                                        reason=f"Local variable '{name}' is assigned in '{func_node.name}' but never used",
+                                        confidence="high",
+                                    )
+                                )
+        elif isinstance(stmt, ast.AnnAssign):
+            if isinstance(stmt.target, ast.Name):
+                name = stmt.target.id
+                if (
+                    not name.startswith("_")
+                    and name not in args_set
+                    and name not in explicit_globals
+                    and name not in loaded_names
+                    and name not in seen_unused
+                ):
+                    seen_unused.add(name)
+                    items.append(
+                        DeadCodeItem(
+                            filepath=filepath,
+                            lineno=stmt.target.lineno,
+                            end_lineno=getattr(
+                                stmt.target, "end_lineno", stmt.target.lineno
+                            ),
+                            name=name,
+                            kind="variable",
+                            reason=f"Local variable '{name}' is assigned in '{func_node.name}' but never used",
+                            confidence="high",
+                        )
+                    )
+    return items
+
+
 class _UnreachableCodeDetector(ast.NodeVisitor):
     """Detects code after unconditional return/raise/break/continue and empty branches."""
 
@@ -215,6 +409,7 @@ class _UnreachableCodeDetector(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self._check_body(node.body)
+        self.items.extend(_detect_unused_locals_in_function(node, self.filepath))
         self.generic_visit(node)
 
     visit_AsyncFunctionDef = visit_FunctionDef
@@ -721,13 +916,351 @@ class _DeadCodePrunerCollector(ast.NodeVisitor):
 
 
 class DeadCodeFixer:
-    """Surgically eliminates unreachable statements, dead branches, and redundant pass statements."""
+    """Surgically eliminates unreachable statements, dead branches, heals empty except blocks, and fixes unused variables."""
 
     def fix(self, source: str, filename: str = "<stdin>") -> DeadCodeFixResult:
         current_code = source
         all_pruned: list[str] = []
 
-        for _ in range(2):
+        for _ in range(3):
+            changed_this_pass = False
+
+            # --- Pass 1: Empty Except Healer ---
+            try:
+                tree = ast.parse(current_code, filename=filename)
+            except SyntaxError:
+                break
+
+            except_handlers_to_heal: list[tuple[int, int]] = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ExceptHandler):
+                    if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
+                        pass_node = node.body[0]
+                        except_handlers_to_heal.append((node.lineno, pass_node.lineno))
+
+            if except_handlers_to_heal:
+                lines = current_code.splitlines(keepends=True)
+                needs_logging_import = not _has_logging_import(tree)
+
+                # Sort by line number descending so replacements do not shift earlier lines
+                for handler_line, pass_line in sorted(
+                    except_handlers_to_heal, key=lambda x: x[1], reverse=True
+                ):
+                    idx = pass_line - 1
+                    if 0 <= idx < len(lines):
+                        orig_line = lines[idx]
+                        indent = orig_line[: len(orig_line) - len(orig_line.lstrip())]
+                        lines[idx] = (
+                            f"{indent}logging.getLogger(__name__).debug("
+                            f"'Suppressed exception', exc_info=True)\n"
+                        )
+                        all_pruned.append(
+                            f"Healed empty except block at line {handler_line} with debug logging"
+                        )
+                        changed_this_pass = True
+
+                if needs_logging_import and changed_this_pass:
+                    insert_idx = 0
+                    while insert_idx < len(lines) and (
+                        lines[insert_idx].startswith("#!")
+                        or "coding:" in lines[insert_idx]
+                        or "coding=" in lines[insert_idx]
+                    ):
+                        insert_idx += 1
+
+                    doc_node = (
+                        tree.body[0]
+                        if tree.body
+                        and isinstance(tree.body[0], ast.Expr)
+                        and isinstance(tree.body[0].value, ast.Constant)
+                        and isinstance(tree.body[0].value.value, str)
+                        else None
+                    )
+                    if (
+                        doc_node
+                        and hasattr(doc_node, "end_lineno")
+                        and doc_node.end_lineno is not None
+                    ):
+                        insert_idx = max(insert_idx, doc_node.end_lineno)
+
+                    for stmt in tree.body:
+                        if (
+                            isinstance(stmt, ast.ImportFrom)
+                            and stmt.module == "__future__"
+                            and hasattr(stmt, "end_lineno")
+                            and stmt.end_lineno is not None
+                        ):
+                            insert_idx = max(insert_idx, stmt.end_lineno)
+
+                    lines.insert(insert_idx, "import logging\n")
+                    all_pruned.append("Added 'import logging' for healed except block")
+
+                candidate = "".join(lines)
+                try:
+                    ast.parse(candidate, filename=filename)
+                    current_code = candidate
+                except SyntaxError:
+                    logging.getLogger(__name__).debug(
+                        "Suppressed exception", exc_info=True
+                    )
+
+            # --- Pass 2: Dead Variable Fixer ---
+            try:
+                tree = ast.parse(current_code, filename=filename)
+            except SyntaxError:
+                break
+
+            renames: list[tuple[int, int, int, str, str]] = []
+            deletions: list[tuple[int, int, list[ast.stmt], str]] = []
+
+            # 2a. Function-level local variables
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    args_set: set[str] = set()
+                    for a in node.args.posonlyargs:
+                        args_set.add(a.arg)
+                    for a in node.args.args:
+                        args_set.add(a.arg)
+                    for a in node.args.kwonlyargs:
+                        args_set.add(a.arg)
+                    if node.args.vararg:
+                        args_set.add(node.args.vararg.arg)
+                    if node.args.kwarg:
+                        args_set.add(node.args.kwarg.arg)
+
+                    explicit_globals: set[str] = set()
+                    has_dynamic = False
+                    loaded_names: set[str] = set()
+
+                    for sub in ast.walk(node):
+                        if isinstance(sub, (ast.Global, ast.Nonlocal)):
+                            explicit_globals.update(sub.names)
+                        elif isinstance(sub, ast.Name) and isinstance(
+                            sub.ctx, ast.Load
+                        ):
+                            loaded_names.add(sub.id)
+                        elif isinstance(sub, ast.Call):
+                            func = sub.func
+                            if isinstance(func, ast.Name) and func.id in (
+                                "locals",
+                                "vars",
+                                "eval",
+                                "exec",
+                            ):
+                                has_dynamic = True
+
+                    if has_dynamic:
+                        continue
+
+                    stmts_in_scope = _walk_stmts_in_scope(node.body)
+                    for stmt, parent_body in stmts_in_scope:
+                        if isinstance(stmt, ast.Assign):
+                            if len(stmt.targets) == 1 and isinstance(
+                                stmt.targets[0], ast.Name
+                            ):
+                                target = stmt.targets[0]
+                                name = target.id
+                                if (
+                                    not name.startswith("_")
+                                    and name not in args_set
+                                    and name not in explicit_globals
+                                    and name not in loaded_names
+                                ):
+                                    if _is_pure_expression(stmt.value):
+                                        deletions.append(
+                                            (
+                                                stmt.lineno,
+                                                getattr(
+                                                    stmt, "end_lineno", stmt.lineno
+                                                ),
+                                                parent_body,
+                                                name,
+                                            )
+                                        )
+                                    else:
+                                        if hasattr(target, "col_offset") and hasattr(
+                                            target, "end_col_offset"
+                                        ):
+                                            renames.append(
+                                                (
+                                                    target.lineno,
+                                                    target.col_offset,
+                                                    target.end_col_offset,
+                                                    f"_{name}",
+                                                    name,
+                                                )
+                                            )
+                            elif len(stmt.targets) == 1 and isinstance(
+                                stmt.targets[0], (ast.Tuple, ast.List)
+                            ):
+                                for elt in stmt.targets[0].elts:
+                                    if isinstance(elt, ast.Name):
+                                        name = elt.id
+                                        if (
+                                            not name.startswith("_")
+                                            and name not in args_set
+                                            and name not in explicit_globals
+                                            and name not in loaded_names
+                                            and hasattr(elt, "col_offset")
+                                            and hasattr(elt, "end_col_offset")
+                                        ):
+                                            renames.append(
+                                                (
+                                                    elt.lineno,
+                                                    elt.col_offset,
+                                                    elt.end_col_offset,
+                                                    f"_{name}",
+                                                    name,
+                                                )
+                                            )
+                        elif isinstance(stmt, ast.AnnAssign):
+                            if isinstance(stmt.target, ast.Name):
+                                name = stmt.target.id
+                                if (
+                                    not name.startswith("_")
+                                    and name not in args_set
+                                    and name not in explicit_globals
+                                    and name not in loaded_names
+                                ):
+                                    if stmt.value is not None and _is_pure_expression(
+                                        stmt.value
+                                    ):
+                                        deletions.append(
+                                            (
+                                                stmt.lineno,
+                                                getattr(
+                                                    stmt, "end_lineno", stmt.lineno
+                                                ),
+                                                parent_body,
+                                                name,
+                                            )
+                                        )
+                                    else:
+                                        target = stmt.target
+                                        if hasattr(target, "col_offset") and hasattr(
+                                            target, "end_col_offset"
+                                        ):
+                                            renames.append(
+                                                (
+                                                    target.lineno,
+                                                    target.col_offset,
+                                                    target.end_col_offset,
+                                                    f"_{name}",
+                                                    name,
+                                                )
+                                            )
+
+            # 2b. Module-level script variables (when not an __init__.py package export)
+            if not filename.endswith("__init__.py"):
+                module_loads: set[str] = set()
+                module_exports: set[str] = set()
+                for sub in ast.walk(tree):
+                    if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                        module_loads.add(sub.id)
+                    elif (
+                        isinstance(sub, ast.Assign)
+                        and any(
+                            isinstance(t, ast.Name) and t.id == "__all__"
+                            for t in sub.targets
+                        )
+                        and isinstance(sub.value, (ast.List, ast.Tuple, ast.Set))
+                    ):
+                        for elt in sub.value.elts:
+                            if isinstance(elt, ast.Constant) and isinstance(
+                                elt.value, str
+                            ):
+                                module_exports.add(elt.value)
+
+                for stmt in tree.body:
+                    if (
+                        isinstance(stmt, ast.Assign)
+                        and len(stmt.targets) == 1
+                        and isinstance(stmt.targets[0], ast.Name)
+                    ):
+                        target = stmt.targets[0]
+                        name = target.id
+                        if (
+                            not name.startswith("_")
+                            and name != "__all__"
+                            and name not in module_loads
+                            and name not in module_exports
+                        ):
+                            if _is_pure_expression(stmt.value):
+                                deletions.append(
+                                    (
+                                        stmt.lineno,
+                                        getattr(stmt, "end_lineno", stmt.lineno),
+                                        tree.body,
+                                        name,
+                                    )
+                                )
+                            else:
+                                if hasattr(target, "col_offset") and hasattr(
+                                    target, "end_col_offset"
+                                ):
+                                    renames.append(
+                                        (
+                                            target.lineno,
+                                            target.col_offset,
+                                            target.end_col_offset,
+                                            f"_{name}",
+                                            name,
+                                        )
+                                    )
+
+            if renames or deletions:
+                lines = current_code.splitlines(keepends=True)
+
+                # 1. Apply renames line-by-line, ordered by column descending
+                renames_by_line: dict[int, list[tuple[int, int, str, str]]] = {}
+                for lineno, col, end_col, new_text, name in renames:
+                    renames_by_line.setdefault(lineno, []).append(
+                        (col, end_col, new_text, name)
+                    )
+
+                for lineno, line_renames in renames_by_line.items():
+                    idx = lineno - 1
+                    if 0 <= idx < len(lines):
+                        line_str = lines[idx]
+                        for col, end_col, new_text, name in sorted(
+                            line_renames, key=lambda x: x[0], reverse=True
+                        ):
+                            line_str = line_str[:col] + new_text + line_str[end_col:]
+                            all_pruned.append(
+                                f"Prefixed unused variable '{name}' with '_' at line {lineno} to preserve side effects"
+                            )
+                            changed_this_pass = True
+                        lines[idx] = line_str
+
+                # 2. Apply deletions ordered by start line descending
+                for start_line, end_line, parent_body, name in sorted(
+                    deletions, key=lambda x: x[0], reverse=True
+                ):
+                    start_idx = start_line - 1
+                    if 0 <= start_idx < len(lines):
+                        if len(parent_body) == 1:
+                            orig_line = lines[start_idx]
+                            indent = orig_line[
+                                : len(orig_line) - len(orig_line.lstrip())
+                            ]
+                            lines[start_idx:end_line] = [f"{indent}pass\n"]
+                        else:
+                            del lines[start_idx:end_line]
+                        all_pruned.append(
+                            f"Pruned unused local variable '{name}' assignment at line {start_line}"
+                        )
+                        changed_this_pass = True
+
+                candidate = "".join(lines)
+                try:
+                    ast.parse(candidate, filename=filename)
+                    current_code = candidate
+                except SyntaxError:
+                    logging.getLogger(__name__).debug(
+                        "Suppressed exception", exc_info=True
+                    )
+
+            # --- Pass 3: Unreachable Code & Redundant Pass ---
             try:
                 tree = ast.parse(current_code, filename=filename)
             except SyntaxError:
@@ -735,22 +1268,26 @@ class DeadCodeFixer:
 
             collector = _DeadCodePrunerCollector()
             collector.visit(tree)
-            if not collector.deletions:
-                break
+            if collector.deletions:
+                lines = current_code.splitlines(keepends=True)
+                sorted_deletions = sorted(
+                    collector.deletions, key=lambda x: x[0], reverse=True
+                )
+                for start_line, end_line, desc in sorted_deletions:
+                    del lines[start_line - 1 : end_line]
+                    all_pruned.append(desc)
+                    changed_this_pass = True
 
-            lines = current_code.splitlines(keepends=True)
-            sorted_deletions = sorted(
-                collector.deletions, key=lambda x: x[0], reverse=True
-            )
-            for start_line, end_line, desc in sorted_deletions:
-                del lines[start_line - 1 : end_line]
-                all_pruned.append(desc)
+                candidate = "".join(lines)
+                try:
+                    ast.parse(candidate, filename=filename)
+                    current_code = candidate
+                except SyntaxError:
+                    logging.getLogger(__name__).debug(
+                        "Suppressed exception", exc_info=True
+                    )
 
-            candidate = "".join(lines)
-            try:
-                ast.parse(candidate, filename=filename)
-                current_code = candidate
-            except SyntaxError:
+            if not changed_this_pass:
                 break
 
         return DeadCodeFixResult(

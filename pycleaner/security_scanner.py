@@ -9,6 +9,7 @@ and assert statements used for input validation.
 from __future__ import annotations
 
 import ast
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -524,7 +525,7 @@ class SecurityScanner:
             findings.extend(detector.findings)
         except SyntaxError:
             # Code with syntax errors cannot be AST-parsed; regex checks still run
-            pass
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
         findings.extend(self._detect_secrets(source, filename))
 

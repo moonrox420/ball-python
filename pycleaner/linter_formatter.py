@@ -9,6 +9,7 @@ fallbacks via autoflake, isort, black, and built-in pure-Python AST pruning.
 from __future__ import annotations
 
 import ast
+import logging
 import re
 import shutil
 import subprocess
@@ -169,7 +170,7 @@ class LinterFormatter:
                     return output, True
         except OSError:
             # Fall back to pure-Python import pruning if autoflake CLI fails
-            pass
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
         return source, False
 
     def _isort_cli_sort(self, code: str) -> str | None:
@@ -187,7 +188,7 @@ class LinterFormatter:
                 return res if res != code else None
         except OSError:
             # Fall back to isort Python module or pure-Python import sorter
-            pass
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
         return None
 
     def _isort_module_sort(self, code: str) -> str | None:
@@ -269,7 +270,7 @@ class LinterFormatter:
                 return res, res != source
         except OSError:
             # Fall back to Black or pure-Python formatter if ruff CLI execution fails
-            pass
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
         return None
 
     def _format_with_black(self, source: str) -> tuple[str, bool, list[str]] | None:
@@ -286,7 +287,7 @@ class LinterFormatter:
                     return res, res != source, ["Formatted with black CLI fallback"]
             except OSError:
                 # Fall back to black module or pure-Python formatter
-                pass
+                logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
         try:
             import black  # type: ignore
 
@@ -443,7 +444,7 @@ class LinterFormatter:
                 )
         except SyntaxError:
             # Return unmodified source if candidate code has syntax issues
-            pass
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
         return source, False, []
 
     def _pure_python_sort_imports(self, source: str) -> tuple[str, bool, list[str]]:
