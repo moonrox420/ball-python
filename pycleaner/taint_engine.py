@@ -262,6 +262,31 @@ class TaintEngine:
     def __init__(self) -> None:
         self.function_summaries: dict[str, FunctionTaintSummary] = {}
 
+    def scan_files(self, files: Sequence[Path]) -> TaintReport:
+        """Scan a specific sequence of Python files for dataflow taint vulnerabilities."""
+        report = TaintReport()
+        parsed_files: list[tuple[Path, ast.Module]] = []
+
+        # Pass 1: Parse ASTs and build interprocedural summaries
+        for fpath in files:
+            try:
+                code = fpath.read_text(encoding="utf-8", errors="replace")
+                tree = ast.parse(code, filename=str(fpath))
+                parsed_files.append((fpath, tree))
+                self._collect_function_summaries(str(fpath), tree)
+            except (SyntaxError, OSError):
+                continue
+
+        # Pass 2: Interprocedural and intraprocedural taint flow analysis
+        for fpath, tree in parsed_files:
+            file_report = self._analyze_tree(str(fpath), tree)
+            report.findings.extend(file_report.findings)
+            report.sinks_checked += file_report.sinks_checked
+            report.sources_detected += file_report.sources_detected
+            report.files_scanned += 1
+
+        return report
+
     def scan_path(
         self, target: str | Path, exclude_patterns: Sequence[str] = ()
     ) -> TaintReport:
@@ -276,28 +301,7 @@ class TaintEngine:
         else:
             return TaintReport()
 
-        report = TaintReport()
-        parsed_files: list[tuple[Path, ast.Module]] = []
-
-        # Pass 1: Parse ASTs and build interprocedural summaries
-        for fpath in files:
-            try:
-                code = fpath.read_text(encoding="utf-8", errors="replace")
-                tree = ast.parse(code, filename=str(fpath))
-                parsed_files.append((fpath, tree))
-                self._collect_function_summaries(str(fpath), tree)
-            except SyntaxError:
-                continue
-
-        # Pass 2: Interprocedural and intraprocedural taint flow analysis
-        for fpath, tree in parsed_files:
-            file_report = self._analyze_tree(str(fpath), tree)
-            report.findings.extend(file_report.findings)
-            report.sinks_checked += file_report.sinks_checked
-            report.sources_detected += file_report.sources_detected
-            report.files_scanned += 1
-
-        return report
+        return self.scan_files(files)
 
     def _inspect_return_child(
         self, child: ast.AST, summary: FunctionTaintSummary

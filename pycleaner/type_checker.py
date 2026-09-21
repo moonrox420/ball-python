@@ -32,6 +32,8 @@ class PyType:
         """Check if this type can be assigned to target type."""
         if isinstance(target, AnyType) or isinstance(self, AnyType) or target == self:
             return True
+        if getattr(target, "name", None) == "object":
+            return True
         if (
             isinstance(self, CustomClassType)
             and isinstance(target, CustomClassType)
@@ -116,7 +118,8 @@ class PyType:
         )
 
     def _check_custom_source(self, target: PyType) -> bool:
-        if self.name in ("StrPath", "PathLike", "AnyStr"):  # type: ignore[attr-defined]
+        src_name = getattr(self, "name", "")
+        if src_name in ("StrPath", "PathLike", "AnyStr"):
             if isinstance(target, PrimitiveType) and target.name in ("str", "bytes"):
                 return True
             if isinstance(target, CustomClassType) and target.name in (
@@ -125,6 +128,31 @@ class PyType:
                 "WindowsPath",
                 "str",
                 "bytes",
+            ):
+                return True
+        if (
+            src_name.startswith("Supports")
+            or src_name.startswith("_")
+            or src_name in ("T", "Any")
+        ):
+            return True
+        if src_name in (
+            "zip",
+            "enumerate",
+            "range",
+            "generator",
+            "iter",
+            "map",
+            "filter",
+        ):
+            if isinstance(target, (ListType, SetType)):
+                return True
+            if isinstance(target, CustomClassType) and target.name in (
+                "list",
+                "List",
+                "Sequence",
+                "Iterable",
+                "Collection",
             ):
                 return True
         return False
@@ -556,24 +584,32 @@ class TypeChecker:
         except SyntaxError:
             return 0
 
+    def check_files(self, target_files: Sequence[Path]) -> TypeReport:
+        """Type-check a specific sequence of Python files without walking directories."""
+        findings: list[TypeFinding] = []
+        functions_checked = 0
+        scanned_count = 0
+        for fpath in target_files:
+            try:
+                findings.extend(self.check_file(fpath))
+                functions_checked += self._count_functions(fpath)
+                scanned_count += 1
+            except OSError:
+                continue
+
+        return TypeReport(
+            findings=findings,
+            files_scanned=scanned_count,
+            functions_checked=functions_checked,
+        )
+
     def check_project(
         self, root_dir: str | Path, exclude_patterns: Sequence[str] = ()
     ) -> TypeReport:
         """Type-check all Python files across an entire project directory."""
         root = Path(root_dir).resolve()
-        findings: list[TypeFinding] = []
-        functions_checked = 0
         py_files = self._discover_python_files(root, exclude_patterns=exclude_patterns)
-
-        for fpath in py_files:
-            findings.extend(self.check_file(fpath))
-            functions_checked += self._count_functions(fpath)
-
-        return TypeReport(
-            findings=findings,
-            files_scanned=len(py_files),
-            functions_checked=functions_checked,
-        )
+        return self.check_files(py_files)
 
     def _fallback_walk(self, root: Path):
         import os
@@ -592,6 +628,58 @@ class TypeChecker:
                 parse_type_annotation(a.annotation) if a.annotation else AnyType()
             )
         return scope
+
+    @staticmethod
+    def _is_terminal_statement(stmt: ast.stmt | None) -> bool:
+        """Check if an AST statement terminates all control flow paths (returns or raises)."""
+        if stmt is None:
+            return False
+        if isinstance(stmt, (ast.Return, ast.Raise)):
+            return True
+        if isinstance(stmt, (ast.With, ast.AsyncWith)):
+            return bool(stmt.body) and TypeChecker._is_terminal_statement(stmt.body[-1])
+        if isinstance(stmt, ast.Try):
+            if not (
+                bool(stmt.body) and TypeChecker._is_terminal_statement(stmt.body[-1])
+            ):
+                return False
+            for handler in stmt.handlers:
+                if not (
+                    bool(handler.body)
+                    and TypeChecker._is_terminal_statement(handler.body[-1])
+                ):
+                    return False
+            if stmt.orelse and not TypeChecker._is_terminal_statement(stmt.orelse[-1]):
+                return False
+            return True
+        if isinstance(stmt, ast.If):
+            if not (
+                bool(stmt.body) and TypeChecker._is_terminal_statement(stmt.body[-1])
+            ):
+                return False
+            if not (
+                bool(stmt.orelse)
+                and TypeChecker._is_terminal_statement(stmt.orelse[-1])
+            ):
+                return False
+            return True
+        if isinstance(stmt, ast.While):
+            if isinstance(stmt.test, ast.Constant) and bool(stmt.test.value):
+                has_return = any(
+                    isinstance(n, (ast.Return, ast.Raise)) for n in ast.walk(stmt)
+                )
+                has_break = any(isinstance(n, ast.Break) for n in ast.walk(stmt))
+                if has_return and not has_break:
+                    return True
+        if isinstance(stmt, getattr(ast, "Match", ())):
+            cases = getattr(stmt, "cases", [])
+            if not cases:
+                return False
+            return all(
+                bool(c.body) and TypeChecker._is_terminal_statement(c.body[-1])
+                for c in cases
+            )
+        return False
 
     def _check_return_paths(
         self,
@@ -649,7 +737,7 @@ class TypeChecker:
             )
         ):
             last_stmt = func.body[-1] if func.body else None
-            ends_with_terminal = isinstance(last_stmt, (ast.Return, ast.Raise))
+            ends_with_terminal = self._is_terminal_statement(last_stmt)
             if not ends_with_terminal:
                 snippet = (
                     ctx.source_lines[func.lineno - 1]
@@ -1009,18 +1097,21 @@ class TypeChecker:
                 return parse_type_annotation(cls_sig.methods[func.attr].return_type)
         return None
 
-    def _infer_typeshed_lookup(self, target: str, func_name: str) -> PyType:
+    def _infer_typeshed_lookup(
+        self, target: str, func_name: str, is_attribute: bool = False
+    ) -> PyType:
         if target:
             sig = self.typeshed.resolve_function(target)
             if sig and sig.return_type and sig.return_type != "Any":
                 return parse_type_annotation(sig.return_type)
 
-        builtin_ret = self.typeshed.get_builtin_return_type(func_name)
-        if builtin_ret:
-            return parse_type_annotation(builtin_ret)
+        if not is_attribute:
+            builtin_ret = self.typeshed.get_builtin_return_type(func_name)
+            if builtin_ret:
+                return parse_type_annotation(builtin_ret)
 
-        if func_name and self.typeshed.resolve_class("builtins", func_name):
-            return CustomClassType(func_name)
+            if func_name and self.typeshed.resolve_class("builtins", func_name):
+                return CustomClassType(func_name)
 
         return AnyType()
 
@@ -1031,21 +1122,33 @@ class TypeChecker:
         local_functions: dict[str, tuple[dict[str, PyType], PyType]],
     ) -> PyType:
         func_name, dotted_name = self._resolve_call_names(expr)
-        ctor = self._infer_constructor_call(
-            func_name, expr.args, scope, local_functions
-        )
-        if ctor is not None:
-            return ctor
+        if not isinstance(expr.func, ast.Attribute):
+            ctor = self._infer_constructor_call(
+                func_name, expr.args, scope, local_functions
+            )
+            if ctor is not None:
+                return ctor
 
         if isinstance(expr.func, ast.Attribute):
             meth = self._infer_attribute_method(expr.func, scope, local_functions)
             if meth is not None:
                 return meth
+            if isinstance(expr.func.value, ast.Name) and expr.func.value.id in (
+                "self",
+                "cls",
+            ):
+                if func_name in local_functions:
+                    return local_functions[func_name][1]
+            return self._infer_typeshed_lookup(
+                dotted_name, func_name, is_attribute=True
+            )
 
         if func_name in local_functions:
             return local_functions[func_name][1]
 
-        return self._infer_typeshed_lookup(dotted_name or func_name, func_name)
+        return self._infer_typeshed_lookup(
+            dotted_name or func_name, func_name, is_attribute=False
+        )
 
     def _infer_expr_type(
         self,

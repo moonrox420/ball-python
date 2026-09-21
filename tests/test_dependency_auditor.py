@@ -127,6 +127,55 @@ class TestDependencyAuditor(unittest.TestCase):
             backup = tmp_path / "pyproject.toml.bak"
             self.assertTrue(backup.is_file())
 
+    def test_pyproject_pruning_with_bracket_extras(self) -> None:
+        """Ensure packages with extras like 'psycopg[binary]' do not prematurely terminate dependencies array."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            code_file = tmp_path / "main.py"
+            code_file.write_text("import psycopg\n", encoding="utf-8")
+
+            pyproj = tmp_path / "pyproject.toml"
+            pyproj.write_text(
+                "[project]\n"
+                "name = 'demo'\n"
+                "dependencies = [\n"
+                "    'psycopg[binary]>=3.2',\n"
+                "    'accelerate>=1.2',\n"
+                "    'tqdm>=4.66',\n"
+                "]\n",
+                encoding="utf-8",
+            )
+
+            auditor = DependencyAuditor(tmp_path)
+            report = auditor.audit(fix=True, prune_unused=True)
+
+            self.assertTrue(report.fixed_pyproject)
+            updated = pyproj.read_text(encoding="utf-8")
+            self.assertIn("psycopg[binary]>=3.2", updated)
+            self.assertNotIn("accelerate", updated)
+            self.assertNotIn("tqdm", updated)
+
+            # Second run must be clean and report no modifications
+            second_report = auditor.audit(fix=True, prune_unused=True)
+            self.assertFalse(second_report.fixed_pyproject)
+            self.assertFalse(second_report.fixed_requirements)
+
+    def test_requirements_update_idempotency_returns_false_when_clean(self) -> None:
+        """Requirements update must return False and not modify files when already synchronized."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            code_file = tmp_path / "main.py"
+            code_file.write_text("import requests\n", encoding="utf-8")
+
+            req_file = tmp_path / "requirements.txt"
+            req_file.write_text("requests>=2.31.0\n", encoding="utf-8")
+
+            auditor = DependencyAuditor(tmp_path)
+            report = auditor.audit(fix=True, prune_unused=True)
+
+            self.assertFalse(report.fixed_requirements)
+
 
 if __name__ == "__main__":
     unittest.main()
+

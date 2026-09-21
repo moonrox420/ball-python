@@ -450,6 +450,20 @@ class DependencyAuditor:
             details=details,
         )
 
+    @staticmethod
+    def _is_array_closing_bracket(line: str) -> bool:
+        """Check if ']' appears outside of quoted strings."""
+        in_quote: str | None = None
+        for char in line:
+            if char in ('"', "'"):
+                if in_quote is None:
+                    in_quote = char
+                elif in_quote == char:
+                    in_quote = None
+            elif char == "]" and in_quote is None:
+                return True
+        return False
+
     def _update_pyproject_toml(
         self, missing: set[str], unused_to_remove: set[str]
     ) -> bool:
@@ -483,7 +497,7 @@ class DependencyAuditor:
             stripped = line.strip()
 
             if re.match(r"^dependencies\s*=\s*\[", stripped):
-                if "]" in stripped:
+                if self._is_array_closing_bracket(stripped):
                     bracket_content = stripped[
                         stripped.find("[") + 1 : stripped.rfind("]")
                     ]
@@ -511,7 +525,7 @@ class DependencyAuditor:
                     continue
 
             if in_dependencies_array:
-                if "]" in stripped:
+                if self._is_array_closing_bracket(stripped):
                     in_dependencies_array = False
                     for sm in sorted(safe_missing):
                         indent = "    "
@@ -580,6 +594,7 @@ class DependencyAuditor:
         }
 
         new_lines: list[str] = []
+        modified = False
         for line in existing_lines:
             stripped = line.strip()
             if not stripped or stripped.startswith(("#", "-")):
@@ -591,11 +606,17 @@ class DependencyAuditor:
                 pkg_name = pkg_match.group(1)
                 canon = self.canonicalize_name(pkg_name)
                 if canon in remove_canons:
+                    modified = True
                     continue
             new_lines.append(line)
 
         # Append missing packages
-        new_lines.extend(sorted(safe_missing))
+        for sm in sorted(safe_missing):
+            new_lines.append(sm)
+            modified = True
 
-        req_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
+        if modified or (not req_file.exists() and safe_missing):
+            req_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+            return True
+        return False
+

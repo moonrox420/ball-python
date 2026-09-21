@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -93,7 +94,23 @@ def find_project_root(path: Path | str | None = None) -> Path:
     if start.is_file():
         start = start.parent
 
+    try:
+        user_home = Path.home().resolve()
+    except Exception:
+        user_home = None
+
+    try:
+        temp_dir = Path(tempfile.gettempdir()).resolve()
+    except Exception:
+        temp_dir = None
+
     for candidate in [start, *start.parents]:
+        # Do not climb above temp_dir if start was inside a temporary directory
+        if temp_dir and candidate == temp_dir and start != temp_dir:
+            break
+        # Do not climb into user home directory unless start is user home itself
+        if user_home and candidate == user_home and start != user_home:
+            break
         if (
             (candidate / "pyproject.toml").is_file()
             or (candidate / "setup.py").is_file()

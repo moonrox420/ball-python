@@ -146,53 +146,95 @@ class SyntaxHealer:
         code = source
         repairs: list[str] = []
 
-        def apply_step(fn: Any, msg_fmt: str) -> bool:
+        def apply_step(fn: Any, msg_fmt: str) -> None:
             nonlocal code
-            new_code, count = fn(code)
-            if count > 0:
-                code = new_code
-                repairs.append(msg_fmt.format(count=count))
-                return self._check_syntax(code, filename) is None
-            return False
+            try:
+                prev_err = self._check_syntax(code, filename)
+                new_code, count = fn(code)
+                if count > 0 and new_code != code:
+                    new_err = self._check_syntax(new_code, filename)
+                    # If previously valid code was broken by this repair pass, roll back:
+                    if prev_err is None and new_err is not None:
+                        logging.getLogger(__name__).warning(
+                            "Healing step %s introduced a syntax error; rolling back",
+                            getattr(fn, "__name__", str(fn)),
+                        )
+                        return
+                    if prev_err is not None and new_err is not None:
+                        if "::" in new_code and "::" not in code:
+                            cleaned = re.sub(r"(?<!:)::(?!:)", ":", new_code)
+                            c_err = self._check_syntax(cleaned, filename)
+                            if c_err is None or c_err != new_err:
+                                new_code = cleaned
+                                new_err = c_err
+                        if prev_err is not None and new_err is not None:
+                            if new_err[1] < prev_err[1]:
+                                logging.getLogger(__name__).warning(
+                                    "Healing step %s broke earlier line %d (previous error was line %d); rolling back",
+                                    getattr(fn, "__name__", str(fn)),
+                                    new_err[1],
+                                    prev_err[1],
+                                )
+                                return
+                    code = new_code
+                    repairs.append(msg_fmt.format(count=count))
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in syntax healing step", exc_info=True
+                )
 
         if "\t" in code:
             code = code.expandtabs(4)
             repairs.append("Normalized tab characters to 4 spaces")
-            if self._check_syntax(code, filename) is None:
-                return code, repairs
 
         if self.fix_py2_syntax:
-            if apply_step(
+            apply_step(
                 self._fix_py2_except,
                 "Converted {count} legacy Python 2 except clause(s) to 'as'",
-            ):
-                return code, repairs
-            if apply_step(
+            )
+            apply_step(
                 self._fix_py2_print,
                 "Converted {count} legacy print statement(s) to print() calls",
-            ):
-                return code, repairs
+            )
 
-        if self.fix_conditional_assignments and apply_step(
-            self._fix_conditional_assignments,
-            "Replaced {count} accidental '=' assignment(s) with '==' in conditionals",
-        ):
-            return code, repairs
+        if self.fix_conditional_assignments:
+            apply_step(
+                self._fix_conditional_assignments,
+                "Replaced {count} accidental '=' assignment(s) with '==' in conditionals",
+            )
 
-        if apply_step(
+        apply_step(
+            self._fix_double_colons,
+            "Normalized {count} duplicate colon(s) on compound statement header(s)",
+        )
+
+        apply_step(
             self._fix_missing_colons,
             "Appended missing ':' to {count} compound statement header(s)",
-        ):
-            return code, repairs
+        )
 
-        if apply_step(
+        apply_step(
             self._fix_unindented_blocks,
             "Re-indented {count} under-indented block(s) following compound statement headers",
-        ):
-            return code, repairs
+        )
 
-        code, d_repairs = self._fix_unbalanced_delimiters(code, filename=filename)
-        repairs.extend(d_repairs)
+        try:
+            prev_err = self._check_syntax(code, filename)
+            d_code, d_repairs = self._fix_unbalanced_delimiters(code, filename=filename)
+            if d_code != code:
+                d_err = self._check_syntax(d_code, filename)
+                if prev_err is None and d_err is not None:
+                    logging.getLogger(__name__).warning(
+                        "Delimiter healing broke valid syntax; rolling back"
+                    )
+                else:
+                    code = d_code
+                    repairs.extend(d_repairs)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "Suppressed exception closing delimiters", exc_info=True
+            )
+
         return code, repairs
 
     def heal(self, source: str, filename: str = "<unknown>") -> SyntaxHealResult:
@@ -497,10 +539,15 @@ class SyntaxHealer:
         logical_tokens: list[tokenize.TokenInfo] = []
 
         def flush() -> None:
+            if not logical_tokens:
+                return
             header_idx = self._get_compound_header_idx(logical_tokens)
             if header_idx is None:
                 return
             if self._has_colon_at_depth_zero(logical_tokens, header_idx + 1):
+                return
+            # If the last token is already a colon, do not append another one
+            if logical_tokens[-1].string == ":":
                 return
             last = logical_tokens[-1]
             insertions.append((last.end[0] - 1, last.end[1]))
@@ -524,28 +571,146 @@ class SyntaxHealer:
         flush()
         return insertions
 
+    _DOUBLE_COLON_RE = re.compile(
+        r"^([ \t]*(?:async\s+)?(?:def\s+[a-zA-Z_]\w*|class\s+[a-zA-Z_]\w*|if\b|elif\b|else\b|for\b|while\b|try\b|except\b|finally\b|with\b)[^\n#]*?):{2,}(\s*(?:#.*)?)$"
+    )
+
+    def _fix_double_colons(self, code: str) -> tuple[str, int]:
+        """Normalize multiple consecutive colons on compound statement headers."""
+        if "::" not in code:
+            return code, 0
+        lines = code.splitlines(keepends=True)
+        count = 0
+        new_lines: list[str] = []
+        for line in lines:
+            m = self._DOUBLE_COLON_RE.match(line.rstrip("\r\n"))
+            if m:
+                header = m.group(1).rstrip()
+                suffix = m.group(2)
+                ending = (
+                    "\r\n"
+                    if line.endswith("\r\n")
+                    else ("\n" if line.endswith("\n") else "")
+                )
+                new_lines.append(f"{header}:{suffix}{ending}")
+                count += 1
+            else:
+                new_lines.append(line)
+        return "".join(new_lines), count
+
+    _COMPOUND_HEADER_FALLBACK = re.compile(
+        r"^([ \t]*(?:async\s+)?(?:def\s+[a-zA-Z_]\w*|class\s+[a-zA-Z_]\w*|if\b|elif\b|else\b|for\b|while\b|try\b|except\b|finally\b|with\b)[^\n#]*?)(?<!:)(\s*(?:#.*)?)$"
+    )
+
+    def _fix_missing_colons_fallback(self, code: str) -> tuple[str, int]:
+        """Line-by-line regex fallback to append missing colons to compound statements."""
+        lines = code.splitlines(keepends=True)
+        count = 0
+        new_lines: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                new_lines.append(line)
+                continue
+
+            # If the non-comment portion of the line already ends with ':', skip it
+            clean_line = re.sub(r"#.*$", "", line.rstrip("\r\n")).rstrip()
+            if clean_line.endswith(":"):
+                new_lines.append(line)
+                continue
+
+            m = self._COMPOUND_HEADER_FALLBACK.match(line.rstrip("\r\n"))
+            if m:
+                header = m.group(1).rstrip()
+                # Before appending ':', check that the header does not already end with ':'
+                if header.endswith(":"):
+                    new_lines.append(line)
+                    continue
+
+                # If this line already has a colon at depth 0 (e.g. one-liner: if cond: return x, or else: return 0), skip it!
+                depth = 0
+                has_colon_at_depth_0 = False
+                in_quote = False
+                quote_char = ""
+                for char in header:
+                    if in_quote:
+                        if char == quote_char:
+                            in_quote = False
+                    elif char in ("'", '"'):
+                        in_quote = True
+                        quote_char = char
+                    elif char in "([{":
+                        depth += 1
+                    elif char in ")]}":
+                        depth = max(0, depth - 1)
+                    elif char == ":" and depth == 0:
+                        has_colon_at_depth_0 = True
+                        break
+
+                if has_colon_at_depth_0:
+                    new_lines.append(line)
+                    continue
+
+                # If brackets on this line are unbalanced (e.g. def foo(\n), skip appending colon to this line
+                open_cnt = sum(header.count(c) for c in "([{")
+                close_cnt = sum(header.count(c) for c in ")]}")
+                if open_cnt > close_cnt:
+                    new_lines.append(line)
+                    continue
+
+                suffix = m.group(2)
+                ending = (
+                    "\r\n"
+                    if line.endswith("\r\n")
+                    else ("\n" if line.endswith("\n") else "")
+                )
+                new_lines.append(f"{header}:{suffix}{ending}")
+                count += 1
+            else:
+                new_lines.append(line)
+        return "".join(new_lines), count
+
     def _fix_missing_colons(self, code: str) -> tuple[str, int]:
         """Detect compound statement headers without trailing colons and append them."""
-        tokens: list[tokenize.TokenInfo] | None
+        tokens: list[tokenize.TokenInfo] | None = None
         try:
             tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
         except tokenize.TokenError:
             tokens = self._tokenize_with_recovered_delimiters(code)
-            if tokens is None:
-                return code, 0
 
-        insertions = self._find_missing_colon_insertions(tokens)
-        if not insertions:
-            return code, 0
+        cur_code = code
+        total_count = 0
 
-        lines = code.splitlines(keepends=True)
-        insertions.sort(key=lambda pos: (pos[0], pos[1]), reverse=True)
-        for line_idx, col in insertions:
-            if 0 <= line_idx < len(lines):
-                target = lines[line_idx]
-                lines[line_idx] = target[:col] + ":" + target[col:]
+        if tokens is not None:
+            insertions = self._find_missing_colon_insertions(tokens)
+            if insertions:
+                lines = cur_code.splitlines(keepends=True)
+                insertions.sort(key=lambda pos: (pos[0], pos[1]), reverse=True)
+                applied_insertions = 0
+                for line_idx, col in insertions:
+                    if 0 <= line_idx < len(lines):
+                        target = lines[line_idx]
+                        before = target[:col].rstrip()
+                        after = target[col:].lstrip()
+                        if before.endswith(":") or after.startswith(":"):
+                            continue
+                        clean_line = re.sub(r"#.*$", "", target).rstrip()
+                        if clean_line.endswith(":"):
+                            continue
+                        lines[line_idx] = target[:col] + ":" + target[col:]
+                        applied_insertions += 1
+                cur_code = "".join(lines)
+                total_count += applied_insertions
 
-        return "".join(lines), len(insertions)
+        # Also run fallback to catch any compound headers missed (e.g. disrupted by unclosed delimiters)
+        cur_code, fb_count = self._fix_missing_colons_fallback(cur_code)
+        total_count += fb_count
+
+        # Clean up any accidental double colons created on compound headers
+        if "::" in cur_code and "::" not in code:
+            cur_code = re.sub(r"(?<!:)::(?!:)", ":", cur_code)
+
+        return cur_code, total_count
 
     def _tokenize_with_recovered_delimiters(
         self, code: str

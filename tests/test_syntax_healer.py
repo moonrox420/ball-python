@@ -181,6 +181,7 @@ class TestSyntaxHealer(unittest.TestCase):
         res = self.healer.heal(broken_code, filename="example.py")
         self.assertFalse(res.is_valid)
         self.assertIsNotNone(res.diagnostic)
+        assert res.diagnostic is not None
         self.assertIn("SyntaxError in example.py", res.diagnostic)
         self.assertIn("^", res.diagnostic)
 

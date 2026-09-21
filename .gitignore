@@ -1,11 +1,14 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+
+# Distribution / Packaging / Builds
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -18,17 +21,36 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+pycleaner.egg-info/
+ballpython.egg-info/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+.release-test/
+
+# Linters, Type Checkers & Testing Caches
 .pytest_cache/
 .pytest_temp/
+.pytest_tmp/
 .ruff_cache/
 .mypy_cache/
-.venv/
-.release-test/
+
+# PyCleaner / BallPython internal state & Backups
+.pycleaner/
+*.bak
+*.pycleaner.bak
+
+# Agent Scratchpads & Mock Test Dumps
+scratch/
+editor-*.py
+
+# Project-specific ignored docs
 GEMINI.md
 CODE_QUALITY.md
 docs/
-pycleaner.egg-info/
-.pycleaner/cache.db*
-.pycleaner/*.bak
-.pycleaner/verification-report.json
-ballpython.egg-info/
+
+# OS Noise
+.DS_Store
+Thumbs.db

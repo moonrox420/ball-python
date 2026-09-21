@@ -18,6 +18,7 @@ from pycleaner.dead_code_detector import DeadCodeFixer
 from pycleaner.import_resolver import ImportResolver
 from pycleaner.linter_formatter import LinterFormatter
 from pycleaner.modernizer import Modernizer
+from pycleaner.security_scanner import SecurityFinding, SecurityScanner
 from pycleaner.syntax_healer import SyntaxHealer
 from pycleaner.verifier import (
     CounterExample,
@@ -48,6 +49,7 @@ class CleanResult:
     format_changed: bool = False
     error: str | None = None
     diagnostics: list[dict[str, str]] = field(default_factory=list)
+    security_findings: list[SecurityFinding] = field(default_factory=list)
     proof_receipts: list[ProofReceipt] = field(default_factory=list)
     refused_changes: list[CounterExample] = field(default_factory=list)
     verification_tier: VerificationTier | None = None
@@ -139,6 +141,7 @@ class CleanPipeline:
         self.dead_code_fixer = DeadCodeFixer()
         self.import_resolver = ImportResolver(custom_import_map=import_map)
         self.linter_formatter = LinterFormatter()
+        self.security_scanner = SecurityScanner(severity_threshold="HIGH")
 
     def _stage_heal(
         self, current_code: str, filename: str, syntax_repairs: list[str]
@@ -318,6 +321,21 @@ class CleanPipeline:
                 else:
                     verification_tier = VerificationTier.TIER_B_SUGGESTED
 
+        # Scan for dangerous calls and security findings
+        sec_report = self.security_scanner.scan_source(current_code, filename=filename)
+        security_findings = list(sec_report.findings)
+        for sf in security_findings:
+            diagnostics.append(
+                {
+                    "file": filename,
+                    "line": str(sf.lineno),
+                    "severity": sf.severity,
+                    "category": sf.category,
+                    "message": sf.message,
+                    "suggestion": sf.suggestion,
+                }
+            )
+
         return CleanResult(
             path=Path(filename),
             original_code=source,
@@ -334,6 +352,7 @@ class CleanPipeline:
             format_changed=format_changed,
             error=final_error,
             diagnostics=diagnostics,
+            security_findings=security_findings,
             proof_receipts=proof_receipts,
             refused_changes=refused_changes,
             verification_tier=verification_tier,
@@ -376,24 +395,58 @@ class CleanPipeline:
     ) -> CleanResult:
         """Process a single file on disk and optionally write back updates."""
         path = Path(filepath).resolve()
-        content = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as err:
+            return CleanResult(
+                path=path,
+                original_code="",
+                cleaned_code="",
+                changed=False,
+                is_valid_python=False,
+                error=f"Permission denied (read-only?): {err}",
+            )
 
         if self.cache is not None:
             cached_result = self.cache.get(path, content)
             if cached_result is not None:
-                if (
+                can_apply_cached = (
                     apply_changes
                     and cached_result.changed
-                    and cached_result.is_valid_python
+                    and (
+                        cached_result.is_valid_python
+                        or bool(cached_result.syntax_repairs)
+                    )
                     and (
                         cached_result.verification_tier
                         != VerificationTier.TIER_C_REFUSED
                     )
-                ):
+                )
+                if can_apply_cached:
                     if backup:
                         bak_path = path.with_name(path.name + ".pycleaner.bak")
-                        shutil.copy2(path, bak_path)
-                    path.write_text(cached_result.cleaned_code, encoding="utf-8")
+                        try:
+                            shutil.copy2(path, bak_path)
+                        except OSError as err:
+                            return CleanResult(
+                                path=path,
+                                original_code=content,
+                                cleaned_code=content,
+                                changed=False,
+                                is_valid_python=cached_result.is_valid_python,
+                                error=f"Permission denied creating backup (read-only?): {err}",
+                            )
+                    try:
+                        path.write_text(cached_result.cleaned_code, encoding="utf-8")
+                    except OSError as err:
+                        return CleanResult(
+                            path=path,
+                            original_code=content,
+                            cleaned_code=content,
+                            changed=False,
+                            is_valid_python=cached_result.is_valid_python,
+                            error=f"Permission denied (read-only?): {err}",
+                        )
                 return cached_result
 
         result = self.process_source(content, filename=str(path))
@@ -414,16 +467,51 @@ class CleanPipeline:
                     diff=result.diff,
                 )
 
-        if (
+        can_apply = (
             apply_changes
             and result.changed
-            and result.is_valid_python
+            and (result.is_valid_python or bool(result.syntax_repairs))
             and (result.verification_tier != VerificationTier.TIER_C_REFUSED)
-        ):
+        )
+        if can_apply:
             if backup:
                 bak_path = path.with_name(path.name + ".pycleaner.bak")
-                shutil.copy2(path, bak_path)
-            path.write_text(result.cleaned_code, encoding="utf-8")
+                try:
+                    shutil.copy2(path, bak_path)
+                except OSError as err:
+                    return CleanResult(
+                        path=path,
+                        original_code=content,
+                        cleaned_code=content,
+                        changed=False,
+                        is_valid_python=result.is_valid_python,
+                        error=f"Permission denied creating backup (read-only?): {err}",
+                        syntax_repairs=result.syntax_repairs,
+                        modernize_transforms=result.modernize_transforms,
+                        dead_code_pruned=result.dead_code_pruned,
+                        resolved_imports=result.resolved_imports,
+                        unresolved_symbols=result.unresolved_symbols,
+                        diagnostics=result.diagnostics,
+                        security_findings=result.security_findings,
+                    )
+            try:
+                path.write_text(result.cleaned_code, encoding="utf-8")
+            except OSError as err:
+                return CleanResult(
+                    path=path,
+                    original_code=content,
+                    cleaned_code=content,
+                    changed=False,
+                    is_valid_python=result.is_valid_python,
+                    error=f"Permission denied (read-only?): {err}",
+                    syntax_repairs=result.syntax_repairs,
+                    modernize_transforms=result.modernize_transforms,
+                    dead_code_pruned=result.dead_code_pruned,
+                    resolved_imports=result.resolved_imports,
+                    unresolved_symbols=result.unresolved_symbols,
+                    diagnostics=result.diagnostics,
+                    security_findings=result.security_findings,
+                )
 
         return result
 

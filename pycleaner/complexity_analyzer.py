@@ -354,17 +354,12 @@ class ComplexityAnalyzer:
         except OSError:
             return None
 
-    def analyze_project(
-        self, root_dir: Path | str, exclude_patterns: Sequence[str] = ()
-    ) -> ComplexityReport:
-        """Analyze complexity across all Python files in a project."""
-        root = Path(root_dir).resolve()
+    def analyze_files(self, target_files: Sequence[Path]) -> ComplexityReport:
+        """Analyze complexity across a specific sequence of Python files without walking directories."""
         all_functions: list[ComplexityMetrics] = []
         files_scanned = 0
 
-        for fpath in collect_project_python_files(
-            root, exclude_patterns=exclude_patterns
-        ):
+        for fpath in target_files:
             try:
                 content = fpath.read_text(encoding="utf-8", errors="replace")
                 metrics = self.analyze_source(content, filename=str(fpath)).functions
@@ -375,6 +370,14 @@ class ComplexityAnalyzer:
 
         all_functions.sort(key=lambda f: f.cyclomatic, reverse=True)
         return ComplexityReport(functions=all_functions, files_scanned=files_scanned)
+
+    def analyze_project(
+        self, root_dir: Path | str, exclude_patterns: Sequence[str] = ()
+    ) -> ComplexityReport:
+        """Analyze complexity across all Python files in a project."""
+        root = Path(root_dir).resolve()
+        py_files = collect_project_python_files(root, exclude_patterns=exclude_patterns)
+        return self.analyze_files(py_files)
 
     @staticmethod
     def _count_function_args(node: ast.FunctionDef | ast.AsyncFunctionDef) -> int:

@@ -684,8 +684,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 @dataclass
 class _FixBatchState:
     changed_count: int = 0
+    would_change_count: int = 0
+    actually_written_count: int = 0
+    partially_updated_count: int = 0
+    partially_would_change_count: int = 0
     error_count: int = 0
     diagnostics: list[dict[str, str]] = field(default_factory=list)
+    security_findings: list[Any] = field(default_factory=list)
     proven_count: int = 0
     suggested_count: int = 0
     refused_count: int = 0
@@ -729,6 +734,12 @@ def _report_file_modifications(
         print_msg("  - Lint: fixed errors and pruned unused imports", style="blue")
     if result.format_changed:
         print_msg("  - Format: applied PEP 8 formatting", style="blue")
+    for sf in getattr(result, "security_findings", []):
+        if getattr(sf, "severity", None) in ("CRITICAL", "HIGH"):
+            print_msg(
+                f"  - Unresolved Security [{sf.severity}]: {sf.message} (line {sf.lineno})",
+                style="bold red",
+            )
 
 
 def _accumulate_result(
@@ -741,6 +752,8 @@ def _accumulate_result(
     print_msg, console, is_json = io_ctx
     if result.diagnostics:
         state.diagnostics.extend(result.diagnostics)
+    if getattr(result, "security_findings", None):
+        state.security_findings.extend(result.security_findings)
 
     if result.proof_receipts:
         state.proof_receipts.extend(result.proof_receipts)
@@ -766,12 +779,63 @@ def _accumulate_result(
 
     if result.error:
         state.error_count += 1
+        is_partial = (result.changed or bool(result.syntax_repairs)) and (
+            result.verification_tier != VerificationTier.TIER_C_REFUSED
+        )
+        if is_partial:
+            state.changed_count += 1
+            if opts.apply_changes:
+                state.partially_updated_count += 1
+            else:
+                state.partially_would_change_count += 1
+
+            if not is_json and not opts.in_progress:
+                action = (
+                    "Partially cleaned"
+                    if opts.apply_changes
+                    else "Would partially modify"
+                )
+                print_msg(f"[yellow]{action}:[/yellow] {py_file.name}")
+                for repair in result.syntax_repairs:
+                    print_msg(f"  - Syntax: {repair}", style="cyan")
+                for mod in result.modernize_transforms:
+                    print_msg(f"  - Modernize: {mod}", style="green")
+                for dc in result.dead_code_pruned:
+                    print_msg(f"  - Dead-code: {dc}", style="yellow")
+                for imp in result.resolved_imports:
+                    print_msg(f"  - Import: {imp}", style="magenta")
+                if result.lint_changed:
+                    print_msg(
+                        "  - Lint: fixed errors and pruned unused imports", style="blue"
+                    )
+                if result.format_changed:
+                    print_msg("  - Format: applied PEP 8 formatting", style="blue")
+                for sf in getattr(result, "security_findings", []):
+                    if getattr(sf, "severity", None) in ("CRITICAL", "HIGH"):
+                        print_msg(
+                            f"  - Unresolved Security [{sf.severity}]: {sf.message} (line {sf.lineno})",
+                            style="bold red",
+                        )
+                if opts.show_diff and result.diff:
+                    _render_fix_diff(result.diff, console)
+        else:
+            if not is_json and not opts.in_progress:
+                for sf in getattr(result, "security_findings", []):
+                    if getattr(sf, "severity", None) in ("CRITICAL", "HIGH"):
+                        print_msg(
+                            f"  - Unresolved Security [{sf.severity}]: {sf.message} (line {sf.lineno})",
+                            style="bold red",
+                        )
+
         if not is_json:
             print_msg(f"[red]ERROR in {py_file.name}:[/red] {result.error}")
         return
 
     if result.changed:
         state.changed_count += 1
+        state.would_change_count += 1
+        if opts.apply_changes and not result.error:
+            state.actually_written_count += 1
         if not is_json and not opts.in_progress:
             _report_file_modifications(result, py_file, opts.apply_changes, print_msg)
             if opts.show_diff and result.diff:
@@ -952,8 +1016,14 @@ def _compute_fix_exit_code(
         return 1
     if is_prove_cmd:
         return 0 if state.error_count == 0 else 1
+    has_unresolved_security = any(
+        getattr(sf, "severity", None) in ("CRITICAL", "HIGH")
+        for sf in state.security_findings
+    )
+    if has_unresolved_security:
+        return 1
     if not apply_changes and (
-        state.changed_count > 0
+        state.would_change_count > 0
         or state.error_count > 0
         or bool(audit_report.missing_packages)
     ):
@@ -1012,7 +1082,11 @@ def _cmd_fix(
 
     if is_json:
         print(json.dumps(state.diagnostics, indent=2))
-        return 0 if state.error_count == 0 else 1
+        has_sec_issues = any(
+            getattr(sf, "severity", None) in ("CRITICAL", "HIGH")
+            for sf in state.security_findings
+        )
+        return 1 if (state.error_count > 0 or has_sec_issues) else 0
 
     audit_report = _run_fix_audit(
         root_dir,
@@ -1027,10 +1101,64 @@ def _cmd_fix(
         or getattr(audit_report, "fixed_pyproject", False)
     ):
         state.changed_count += 1
+        state.would_change_count += 1
+        state.actually_written_count += 1
 
-    print_msg(
-        f"\n[bold]Summary: {len(py_files)} inspected, {state.changed_count} updated, {state.error_count} errors.[/bold]"
-    )
+    if not opts.apply_changes:
+        if state.partially_would_change_count > 0:
+            err_label = (
+                "1 remaining error"
+                if state.error_count == 1
+                else f"{state.error_count} remaining errors"
+            )
+            if state.would_change_count > 0:
+                print_msg(
+                    f"\n[bold]Summary: {len(py_files)} inspected, {state.would_change_count} would change, {state.partially_would_change_count} would partially change, 0 written, {err_label}.[/bold]"
+                )
+            else:
+                print_msg(
+                    f"\n[bold]Summary: {len(py_files)} inspected, {state.partially_would_change_count} would partially change, 0 written, {err_label}.[/bold]"
+                )
+        else:
+            print_msg(
+                f"\n[bold]Summary: {len(py_files)} inspected, {state.would_change_count} would change, 0 written, {state.error_count} errors.[/bold]"
+            )
+    else:
+        if state.partially_updated_count > 0:
+            err_label = (
+                "1 remaining error"
+                if state.error_count == 1
+                else f"{state.error_count} remaining errors"
+            )
+            if state.actually_written_count > 0:
+                print_msg(
+                    f"\n[bold]Summary: {len(py_files)} inspected, {state.actually_written_count} updated, {state.partially_updated_count} partially updated, {err_label}.[/bold]"
+                )
+            else:
+                print_msg(
+                    f"\n[bold]Summary: {len(py_files)} inspected, {state.partially_updated_count} partially updated, {err_label}.[/bold]"
+                )
+        else:
+            print_msg(
+                f"\n[bold]Summary: {len(py_files)} inspected, {state.actually_written_count} updated, {state.error_count} errors.[/bold]"
+            )
+
+    critical_or_high_findings = [
+        sf
+        for sf in state.security_findings
+        if getattr(sf, "severity", None) in ("CRITICAL", "HIGH")
+    ]
+    if critical_or_high_findings and not is_json:
+        print_msg(
+            f"\n[bold red]Unresolved Security Findings ({len(critical_or_high_findings)} issue(s)):[/bold red]"
+        )
+        for sf in critical_or_high_findings:
+            f_path = getattr(sf, "filepath", getattr(sf, "file", "<unknown>"))
+            print_msg(
+                f"  [bold red]- [{sf.severity}] {f_path}:{sf.lineno}: {sf.message}[/bold red]"
+            )
+            if getattr(sf, "suggestion", None):
+                print_msg(f"    [dim]Suggestion: {sf.suggestion}[/dim]")
 
     if pipeline.verify_proofs:
         total_proven_callables = sum(
@@ -1187,7 +1315,7 @@ def _cmd_baseline(
     fingerprints: list[BaselineFingerprint] = []
 
     detector = DeadCodeDetector()
-    dead_code_report = detector.scan_project(root_dir)
+    dead_code_report = detector.scan_files(py_files)
     for item in dead_code_report.items:
         if item.kind == "unused-import":
             rule = "DC002"
@@ -1206,7 +1334,7 @@ def _cmd_baseline(
         )
 
     scanner = SecurityScanner()
-    sec_report = scanner.scan_project(root_dir)
+    sec_report = scanner.scan_files(py_files)
     for finding in sec_report.findings:
         fingerprints.append(
             BaselineManager.create_fingerprint(
@@ -1219,7 +1347,7 @@ def _cmd_baseline(
         )
 
     analyzer = ComplexityAnalyzer()
-    comp_report = analyzer.analyze_project(root_dir)
+    comp_report = analyzer.analyze_files(py_files)
     thresholds = (
         getattr(args, "max_cyclomatic", config.max_cyclomatic_complexity),
         getattr(args, "max_cognitive", config.max_cognitive_complexity),
@@ -1373,9 +1501,10 @@ def _cmd_cache(
     console: Any,
 ) -> int:
     """Manage and inspect the content-addressable verification and AST cache."""
-    db_path = getattr(args, "db", None) or getattr(
+    raw_db_path = getattr(args, "db", None) or getattr(
         config, "cache_db_path", ".pycleaner/cache.db"
     )
+    db_path: str = str(raw_db_path) if raw_db_path else ".pycleaner/cache.db"
     cache = ContentAddressableCache(db_path=db_path)
 
     if getattr(args, "clear", False):
@@ -1445,7 +1574,18 @@ def _render_audit_cli_output(
 
 def _cmd_audit(args: argparse.Namespace, config: PyCleanerConfig, print_msg) -> int:
     """Dependency audit command."""
-    root_dir = find_project_root(args.paths[0] if args.paths else None)
+    targets = getattr(args, "paths", ["."])
+    target_path = Path(targets[0]).resolve() if targets else Path.cwd()
+    root_dir = find_project_root(target_path)
+    explicit_files = (
+        [
+            Path(p).resolve()
+            for p in targets
+            if Path(p).is_file() and Path(p).suffix == ".py"
+        ]
+        if targets
+        else None
+    )
 
     is_check = getattr(args, "check", False)
     fix_flag = getattr(args, "fix", False) or getattr(args, "fix_deps", False)
@@ -1454,6 +1594,7 @@ def _cmd_audit(args: argparse.Namespace, config: PyCleanerConfig, print_msg) -> 
     audit_report = auditor.audit(
         fix=fix_flag and not is_check,
         prune_unused=prune_flag and not is_check,
+        target_files=explicit_files or None,
     )
 
     if getattr(args, "json", False):
@@ -1475,7 +1616,7 @@ def _render_scan_json(report: Any) -> int:
         for f in report.findings
     ]
     print(json.dumps(findings, indent=2))
-    return 1 if report.critical_count > 0 else 0
+    return 1 if (report.critical_count > 0 or report.high_count > 0) else 0
 
 
 def _render_scan_table(report: Any, console: Any, target_base: str) -> None:
@@ -1526,23 +1667,24 @@ def _render_scan_cli_summary(
         f"\n  Total: {report.count} finding(s) - "
         f"[red]{report.critical_count} critical[/red], [red]{report.high_count} high[/red]"
     )
-    return 1 if report.critical_count > 0 else 0
+    return 1 if (report.critical_count > 0 or report.high_count > 0) else 0
 
 
 def _cmd_scan(
     args: argparse.Namespace, config: PyCleanerConfig, print_msg, console
 ) -> int:
     """Security scan command."""
-    root_dir = Path(args.paths[0]).resolve() if args.paths else Path.cwd()
-    if not root_dir.is_dir():
-        root_dir = root_dir.parent
+    targets = getattr(args, "paths", ["."])
+    target_path = Path(targets[0]).resolve() if targets else Path.cwd()
+    root_dir = find_project_root(target_path)
+    py_files = discover_python_files(args.paths, config=config, root=root_dir)
 
     severity = getattr(args, "severity", config.security_severity_threshold)
     scanner = SecurityScanner(
         severity_threshold=severity,
         ignore_rules=set(config.ignore_security_rules),
     )
-    report = scanner.scan_project(root_dir, exclude_patterns=config.exclude)
+    report = scanner.scan_files(py_files)
 
     target_base = args.paths[0] if args.paths else "."
     if getattr(args, "json", False):
@@ -1636,12 +1778,13 @@ def _cmd_complexity(
     args: argparse.Namespace, config: PyCleanerConfig, print_msg, console
 ) -> int:
     """Complexity analysis command."""
-    root_dir = Path(args.paths[0]).resolve() if args.paths else Path.cwd()
-    if not root_dir.is_dir():
-        root_dir = root_dir.parent
+    targets = getattr(args, "paths", ["."])
+    target_path = Path(targets[0]).resolve() if targets else Path.cwd()
+    root_dir = find_project_root(target_path)
+    py_files = discover_python_files(args.paths, config=config, root=root_dir)
 
     analyzer = ComplexityAnalyzer()
-    report = analyzer.analyze_project(root_dir, exclude_patterns=config.exclude)
+    report = analyzer.analyze_files(py_files)
 
     thresholds = (
         getattr(args, "max_cyclomatic", config.max_cyclomatic_complexity),
@@ -1711,17 +1854,20 @@ def _cmd_dead_code(
     args: argparse.Namespace, config: PyCleanerConfig, print_msg, console
 ) -> int:
     """Dead code detection command."""
-    root_dir = Path(args.paths[0]).resolve() if args.paths else Path.cwd()
-    if not root_dir.is_dir():
-        root_dir = root_dir.parent
+    targets = getattr(args, "paths", ["."])
+    target_path = Path(targets[0]).resolve() if targets else Path.cwd()
+    root_dir = find_project_root(target_path)
+    py_files = discover_python_files(args.paths, config=config, root=root_dir)
 
     detector = DeadCodeDetector(
         ignore_decorators=set(config.ignore_decorators),
         ignore_names=set(config.ignore_names),
     )
     if getattr(args, "fix", False):
-        print_msg(f"[bold green]Pruning dead code across {root_dir}...[/bold green]")
-        fix_results = detector.fix_project(root_dir, exclude_patterns=config.exclude)
+        print_msg(
+            f"[bold green]Pruning dead code across {len(py_files)} file(s)...[/bold green]"
+        )
+        fix_results = detector.fix_files(py_files)
         total_pruned = sum(len(res.pruned_items) for res in fix_results.values())
         print_msg(
             f"[green]Successfully fixed {len(fix_results)} file(s), pruned {total_pruned} dead code item(s).[/green]"
@@ -1734,7 +1880,7 @@ def _cmd_dead_code(
             print_msg(f"  [cyan]{rel_p}[/cyan]: {len(res.pruned_items)} pruned")
         return 0
 
-    report = detector.scan_project(root_dir, exclude_patterns=config.exclude)
+    report = detector.scan_files(py_files)
 
     if getattr(args, "json", False):
         return _render_dead_code_json(report.items)
@@ -1814,12 +1960,13 @@ def _cmd_types(
     args: argparse.Namespace, config: PyCleanerConfig, print_msg, console
 ) -> int:
     """Bidirectional type checking and inference with Typeshed stubs."""
-    root_dir = Path(args.paths[0]).resolve() if args.paths else Path.cwd()
-    if not root_dir.is_dir():
-        root_dir = root_dir.parent
+    targets = getattr(args, "paths", ["."])
+    target_path = Path(targets[0]).resolve() if targets else Path.cwd()
+    root_dir = find_project_root(target_path)
+    py_files = discover_python_files(args.paths, config=config, root=root_dir)
 
     checker = TypeChecker(strict=config.strict_types)
-    report = checker.check_project(root_dir, exclude_patterns=config.exclude)
+    report = checker.check_files(py_files)
 
     target_base = args.paths[0] if args.paths else "."
     if getattr(args, "json", False):
@@ -1908,12 +2055,13 @@ def _cmd_taint(
     args: argparse.Namespace, config: PyCleanerConfig, print_msg, console
 ) -> int:
     """Interprocedural SAST dataflow and taint vulnerability analysis."""
-    root_dir = Path(args.paths[0]).resolve() if args.paths else Path.cwd()
-    if not root_dir.is_dir():
-        root_dir = root_dir.parent
+    targets = getattr(args, "paths", ["."])
+    target_path = Path(targets[0]).resolve() if targets else Path.cwd()
+    root_dir = find_project_root(target_path)
+    py_files = discover_python_files(args.paths, config=config, root=root_dir)
 
     engine = TaintEngine()
-    report = engine.scan_path(root_dir, exclude_patterns=config.exclude)
+    report = engine.scan_files(py_files)
 
     target_base = args.paths[0] if args.paths else "."
     if getattr(args, "json", False):

@@ -16,6 +16,48 @@ from typing import ClassVar
 
 from pycleaner.discovery import collect_project_python_files
 from pycleaner.frameworks import FrameworkRegistry, get_default_registry
+from pycleaner.security_scanner import is_secret_ast_node
+
+PROTECTED_NAMES: frozenset[str] = frozenset(
+    {
+        "AWS_KEY",
+        "AWS_SECRET",
+        "GITHUB_TOKEN",
+        "STRIPE_KEY",
+        "SLACK_TOKEN",
+        "SENDGRID",
+        "DSN",
+        "DATABASE_URL",
+        "PRIVATE_KEY",
+        "PEM",
+        "SECRET_KEY",
+        "API_KEY",
+    }
+)
+
+
+def _is_protected_variable(name: str, value_node: ast.AST | None = None) -> bool:
+    """Check if a variable name or assigned value represents a protected secret or config."""
+    name_upper = name.upper()
+    if name_upper in PROTECTED_NAMES:
+        return True
+    if any(
+        kw in name_upper
+        for kw in (
+            "SECRET",
+            "TOKEN",
+            "API_KEY",
+            "APIKEY",
+            "PASSWORD",
+            "PASSWD",
+            "PRIVATE_KEY",
+            "CREDENTIAL",
+        )
+    ):
+        return True
+    if value_node is not None and is_secret_ast_node(value_node):
+        return True
+    return False
 
 
 @dataclass(slots=True)
@@ -127,6 +169,8 @@ class _DefinitionCollector(ast.NodeVisitor):
                             name, "variable", node, context, self.tree, self.filepath
                         ):
                             continue
+                        if _is_protected_variable(name, node.value):
+                            continue
                         self.definitions.append(
                             (name, "variable", node.lineno, node.end_lineno, context)
                         )
@@ -151,6 +195,9 @@ class _DefinitionCollector(ast.NodeVisitor):
                 if self.tree is not None and self.registry.is_protected(
                     name, "variable", node, context, self.tree, self.filepath
                 ):
+                    self.generic_visit(node)
+                    return
+                if _is_protected_variable(name, node.value):
                     self.generic_visit(node)
                     return
                 self.definitions.append(
@@ -330,6 +377,7 @@ def _detect_unused_locals_in_function(
                         and name not in explicit_globals
                         and name not in loaded_names
                         and name not in seen_unused
+                        and not _is_protected_variable(name, stmt.value)
                     ):
                         seen_unused.add(name)
                         items.append(
@@ -353,6 +401,7 @@ def _detect_unused_locals_in_function(
                                 and name not in explicit_globals
                                 and name not in loaded_names
                                 and name not in seen_unused
+                                and not _is_protected_variable(name, stmt.value)
                             ):
                                 seen_unused.add(name)
                                 items.append(
@@ -377,6 +426,7 @@ def _detect_unused_locals_in_function(
                     and name not in explicit_globals
                     and name not in loaded_names
                     and name not in seen_unused
+                    and not _is_protected_variable(name, stmt.value)
                 ):
                     seen_unused.add(name)
                     items.append(
@@ -670,16 +720,13 @@ class DeadCodeDetector:
         )
         self.ignore_names = ignore_names or set()
 
-    def scan_project(
-        self, root_dir: Path | str, exclude_patterns: Sequence[str] = ()
-    ) -> DeadCodeReport:
-        """Scan an entire project directory for dead code."""
-        root = Path(root_dir).resolve()
-        py_files = self._discover_files(root, exclude_patterns=exclude_patterns)
-
+    def scan_files(self, target_files: Sequence[Path]) -> DeadCodeReport:
+        """Scan a specific sequence of Python files for dead code without walking parent directories."""
         state = _ProjectScanState(framework_registry=self.framework_registry)
-        for py_file in py_files:
+        scanned_count = 0
+        for py_file in target_files:
             state.process_file(py_file)
+            scanned_count += 1
 
         items: list[DeadCodeItem] = list(state.unreachable)
         for filepath, name, kind, lineno, end_lineno, _ in state.definitions:
@@ -702,9 +749,17 @@ class DeadCodeDetector:
         items.sort(key=lambda x: (x.filepath, x.lineno))
         return DeadCodeReport(
             items=items,
-            files_scanned=len(py_files),
+            files_scanned=scanned_count,
             total_definitions=len(state.definitions),
         )
+
+    def scan_project(
+        self, root_dir: Path | str, exclude_patterns: Sequence[str] = ()
+    ) -> DeadCodeReport:
+        """Scan an entire project directory for dead code."""
+        root = Path(root_dir).resolve()
+        py_files = self._discover_files(root, exclude_patterns=exclude_patterns)
+        return self.scan_files(py_files)
 
     def scan_source(self, source: str, filename: str = "<unknown>") -> DeadCodeReport:
         """Scan a single source string for dead code patterns (unreachable/empty only)."""
@@ -766,13 +821,30 @@ class DeadCodeDetector:
     def fix_file(
         self, filepath: Path | str, apply_changes: bool = True
     ) -> DeadCodeFixResult:
-        """Surgically fix dead code in a file."""
+        """Surgically fix dead code in a file with safe read-only handling."""
         path = Path(filepath).resolve()
-        content = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return DeadCodeFixResult(code="", changed=False, pruned_items=[])
         res = self.fix_source(content, filename=str(path))
         if apply_changes and res.changed:
-            path.write_text(res.code, encoding="utf-8")
+            try:
+                path.write_text(res.code, encoding="utf-8")
+            except OSError:
+                return DeadCodeFixResult(code=content, changed=False, pruned_items=[])
         return res
+
+    def fix_files(
+        self, target_files: Sequence[Path], apply_changes: bool = True
+    ) -> dict[Path, DeadCodeFixResult]:
+        """Surgically fix dead code across a specific sequence of Python files."""
+        results: dict[Path, DeadCodeFixResult] = {}
+        for pf in target_files:
+            res = self.fix_file(pf, apply_changes=apply_changes)
+            if res.changed:
+                results[pf] = res
+        return results
 
     def fix_project(
         self, root_dir: Path | str, exclude_patterns: Sequence[str] = ()
@@ -780,12 +852,7 @@ class DeadCodeDetector:
         """Surgically fix dead code across all project Python files."""
         root = Path(root_dir).resolve()
         py_files = self._discover_files(root, exclude_patterns=exclude_patterns)
-        results: dict[Path, DeadCodeFixResult] = {}
-        for pf in py_files:
-            res = self.fix_file(pf, apply_changes=True)
-            if res.changed:
-                results[pf] = res
-        return results
+        return self.fix_files(py_files, apply_changes=True)
 
 
 @dataclass(slots=True)
@@ -1065,6 +1132,7 @@ class DeadCodeFixer:
                                     and name not in args_set
                                     and name not in explicit_globals
                                     and name not in loaded_names
+                                    and not _is_protected_variable(name, stmt.value)
                                 ):
                                     if _is_pure_expression(stmt.value):
                                         deletions.append(
@@ -1078,14 +1146,18 @@ class DeadCodeFixer:
                                             )
                                         )
                                     else:
-                                        if hasattr(target, "col_offset") and hasattr(
-                                            target, "end_col_offset"
+                                        col = getattr(target, "col_offset", None)
+                                        end_col = getattr(
+                                            target, "end_col_offset", None
+                                        )
+                                        if isinstance(col, int) and isinstance(
+                                            end_col, int
                                         ):
                                             renames.append(
                                                 (
                                                     target.lineno,
-                                                    target.col_offset,
-                                                    target.end_col_offset,
+                                                    col,
+                                                    end_col,
                                                     f"_{name}",
                                                     name,
                                                 )
@@ -1096,19 +1168,24 @@ class DeadCodeFixer:
                                 for elt in stmt.targets[0].elts:
                                     if isinstance(elt, ast.Name):
                                         name = elt.id
+                                        col = getattr(elt, "col_offset", None)
+                                        end_col = getattr(elt, "end_col_offset", None)
                                         if (
                                             not name.startswith("_")
                                             and name not in args_set
                                             and name not in explicit_globals
                                             and name not in loaded_names
-                                            and hasattr(elt, "col_offset")
-                                            and hasattr(elt, "end_col_offset")
+                                            and not _is_protected_variable(
+                                                name, stmt.value
+                                            )
+                                            and isinstance(col, int)
+                                            and isinstance(end_col, int)
                                         ):
                                             renames.append(
                                                 (
                                                     elt.lineno,
-                                                    elt.col_offset,
-                                                    elt.end_col_offset,
+                                                    col,
+                                                    end_col,
                                                     f"_{name}",
                                                     name,
                                                 )
@@ -1121,6 +1198,7 @@ class DeadCodeFixer:
                                     and name not in args_set
                                     and name not in explicit_globals
                                     and name not in loaded_names
+                                    and not _is_protected_variable(name, stmt.value)
                                 ):
                                     if stmt.value is not None and _is_pure_expression(
                                         stmt.value
@@ -1137,14 +1215,18 @@ class DeadCodeFixer:
                                         )
                                     else:
                                         target = stmt.target
-                                        if hasattr(target, "col_offset") and hasattr(
-                                            target, "end_col_offset"
+                                        col = getattr(target, "col_offset", None)
+                                        end_col = getattr(
+                                            target, "end_col_offset", None
+                                        )
+                                        if isinstance(col, int) and isinstance(
+                                            end_col, int
                                         ):
                                             renames.append(
                                                 (
                                                     target.lineno,
-                                                    target.col_offset,
-                                                    target.end_col_offset,
+                                                    col,
+                                                    end_col,
                                                     f"_{name}",
                                                     name,
                                                 )
@@ -1184,6 +1266,7 @@ class DeadCodeFixer:
                             and name != "__all__"
                             and name not in module_loads
                             and name not in module_exports
+                            and not _is_protected_variable(name, stmt.value)
                         ):
                             if _is_pure_expression(stmt.value):
                                 deletions.append(
@@ -1195,14 +1278,14 @@ class DeadCodeFixer:
                                     )
                                 )
                             else:
-                                if hasattr(target, "col_offset") and hasattr(
-                                    target, "end_col_offset"
-                                ):
+                                col = getattr(target, "col_offset", None)
+                                end_col = getattr(target, "end_col_offset", None)
+                                if isinstance(col, int) and isinstance(end_col, int):
                                     renames.append(
                                         (
                                             target.lineno,
-                                            target.col_offset,
-                                            target.end_col_offset,
+                                            col,
+                                            end_col,
                                             f"_{name}",
                                             name,
                                         )

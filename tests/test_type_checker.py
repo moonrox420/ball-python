@@ -135,8 +135,113 @@ class TestTypeChecker:
 
         checker = TypeChecker()
         findings = checker.check_file(f)
-
         assert any("expects 'str' but received 'int'" in f.message for f in findings)
+
+    def test_object_accepts_all_types(self, tmp_path: Path) -> None:
+        code = textwrap.dedent("""
+            def run() -> None:
+                x = input("Enter prompt: ")
+        """)
+        f = tmp_path / "object_call.py"
+        f.write_text(code, encoding="utf-8")
+
+        checker = TypeChecker()
+        findings = checker.check_file(f)
+        assert len(findings) == 0
+
+    def test_terminal_control_flow_constructs(self, tmp_path: Path) -> None:
+        code = textwrap.dedent("""
+            class Manager:
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+
+            def with_return(m: Manager) -> bool:
+                with m as x:
+                    return True
+
+            def try_except_return() -> int:
+                try:
+                    return 1
+                except Exception:
+                    return 0
+
+            def if_else_return(flag: bool) -> str:
+                if flag:
+                    return "yes"
+                else:
+                    return "no"
+
+            def while_true_return() -> float:
+                while True:
+                    return 3.14
+        """)
+        f = tmp_path / "terminal_flows.py"
+        f.write_text(code, encoding="utf-8")
+
+        checker = TypeChecker()
+        findings = checker.check_file(f)
+        missing_returns = [f for f in findings if "Missing return path" in f.message]
+        assert len(missing_returns) == 0
+
+    def test_method_calls_isolated_from_local_functions(self, tmp_path: Path) -> None:
+        code = textwrap.dedent("""
+            import os
+
+            DEFAULT_DSN: str = os.environ.get("URL", "postgresql://localhost")
+
+            class Store:
+                def get(self, key: str) -> dict:
+                    return {"key": key}
+        """)
+        f = tmp_path / "method_isol.py"
+        f.write_text(code, encoding="utf-8")
+
+        checker = TypeChecker()
+        findings = checker.check_file(f)
+        assert len(findings) == 0
+
+    def test_attribute_method_calls_not_shadowed_by_builtins(self, tmp_path: Path) -> None:
+        code = textwrap.dedent("""
+            class Dataset:
+                def map(self, fn):
+                    return self
+
+            def process(ds: Dataset) -> Dataset:
+                result: Dataset = ds.map(lambda x: x)
+                return result
+        """)
+        f = tmp_path / "map_isol.py"
+        f.write_text(code, encoding="utf-8")
+
+        checker = TypeChecker()
+        findings = checker.check_file(f)
+        assert len(findings) == 0
+
+    def test_sorted_accepts_zip_iterable(self, tmp_path: Path) -> None:
+        code = textwrap.dedent("""
+            def sort_pairs(a: list[int], b: list[str]) -> list:
+                return sorted(zip(a, b))
+        """)
+        f = tmp_path / "sorted_zip.py"
+        f.write_text(code, encoding="utf-8")
+
+        checker = TypeChecker()
+        findings = checker.check_file(f)
+        assert len(findings) == 0
+
+    def test_typevar_assignable(self, tmp_path: Path) -> None:
+        code = textwrap.dedent("""
+            import statistics
+
+            avg_total: float = statistics.mean([1.0, 2.0, 3.0])
+        """)
+        f = tmp_path / "typevar.py"
+        f.write_text(code, encoding="utf-8")
+
+        checker = TypeChecker()
+        findings = checker.check_file(f)
+        assert len(findings) == 0
+
 
 
 class TestTypeshedResolver:

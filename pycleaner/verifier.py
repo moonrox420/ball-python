@@ -99,8 +99,12 @@ def _worker_differential_fuzz(
         }
 
         try:
-            orig_code = compile(orig_source, "<orig_sandbox>", "exec")  # nosec: B102 - intentionally isolated in worker process
-            exec(orig_code, orig_ns)  # nosec: B102 - intentionally isolated in worker process
+            orig_code = compile(
+                orig_source, "<orig_sandbox>", "exec"
+            )  # nosec: B102 - intentionally isolated in worker process
+            exec(
+                orig_code, orig_ns
+            )  # nosec: B102 - intentionally isolated in worker process
         except BaseException as e:
             conn.send(
                 {
@@ -111,8 +115,12 @@ def _worker_differential_fuzz(
             return
 
         try:
-            trans_code = compile(trans_source, "<trans_sandbox>", "exec")  # nosec: B102 - intentionally isolated in worker process
-            exec(trans_code, trans_ns)  # nosec: B102 - intentionally isolated in worker process
+            trans_code = compile(
+                trans_source, "<trans_sandbox>", "exec"
+            )  # nosec: B102 - intentionally isolated in worker process
+            exec(
+                trans_code, trans_ns
+            )  # nosec: B102 - intentionally isolated in worker process
         except BaseException as e:
             conn.send(
                 {

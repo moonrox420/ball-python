@@ -1,7 +1,5 @@
 # Core Dependencies
 ruff>=0.1.0
-rich>=13.0.0
-tomli>=1.1.0; python_version < '3.11'
 
 # Development & Testing (Optional)
 pytest>=8.0.0

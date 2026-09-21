@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ballpython"
-version = "2.1.0"
+version = "2.1.1"
 description = "The Ultimate Static Python Intelligence, Healing, Type Verification, and Security Suite"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,8 +14,6 @@ authors = [
 ]
 dependencies = [
     "ruff>=0.1.0",
-    "rich>=13.0.0",
-    "tomli>=1.1.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]

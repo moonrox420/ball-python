@@ -103,7 +103,7 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ),
     (
         "GitHub Token",
-        re.compile(r"gh[ps]_[A-Za-z0-9_]{36}"),
+        re.compile(r"gh[ps]_[A-Za-z0-9_]{20,}"),
         "Use environment variables or GitHub's OIDC",
     ),
     (
@@ -111,7 +111,47 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
         re.compile(r"xox[bpras]-[A-Za-z0-9\-]{10,}"),
         "Use environment variables for Slack tokens",
     ),
+    (
+        "Stripe Secret Key",
+        re.compile(r"sk_(?:live|test)_[A-Za-z0-9]{20,}"),
+        "Use environment variables or Stripe's secret manager",
+    ),
+    (
+        "SendGrid API Key",
+        re.compile(r"SG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"),
+        "Use environment variables for SendGrid keys",
+    ),
+    (
+        "Credentialed Database URL",
+        re.compile(
+            r"(?i)(?:postgres|postgresql|mysql|mongodb|redis|amqp)://[^:]+:[^@]+@[^/\s]+"
+        ),
+        "Never embed credentials in connection strings; use secret stores",
+    ),
 ]
+
+
+def is_secret_literal(value: str) -> bool:
+    """Check if a string literal matches any known secret pattern."""
+    if not isinstance(value, str) or len(value) < 8:
+        return False
+    for _, pattern, _ in _SECRET_PATTERNS:
+        if pattern.search(value):
+            return True
+    return False
+
+
+def is_secret_ast_node(node: ast.AST | None) -> bool:
+    """Recursively check if an AST node contains any hardcoded secret string."""
+    if node is None:
+        return False
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return is_secret_literal(node.value)
+    for child in ast.walk(node):
+        if isinstance(child, ast.Constant) and isinstance(child.value, str):
+            if is_secret_literal(child.value):
+                return True
+    return False
 
 
 _DANGEROUS_CALL_SPECS: dict[str, tuple[str, str, str, str]] = {
@@ -176,7 +216,7 @@ _DANGEROUS_CALL_SPECS: dict[str, tuple[str, str, str, str]] = {
         "Use json.loads() for data interchange",
     ),
     "os.system": (
-        "HIGH",
+        "CRITICAL",
         "shell-injection",
         "os.system() passes commands through the shell and is vulnerable to injection",
         "Use subprocess.run() with a list of arguments (no shell=True)",
@@ -432,7 +472,12 @@ class _DangerousCallDetector(ast.NodeVisitor):
                     )
                 ):
                     has_safe_loader = True
-            if not has_safe_loader and func_name == "yaml.load":
+            if func_name == "yaml.unsafe_load" or not has_safe_loader:
+                msg = (
+                    "yaml.unsafe_load() can execute arbitrary Python objects"
+                    if func_name == "yaml.unsafe_load"
+                    else "yaml.load() without SafeLoader can execute arbitrary Python objects"
+                )
                 self._add_finding(
                     SecurityFinding(
                         filepath=self.filepath,
@@ -440,7 +485,7 @@ class _DangerousCallDetector(ast.NodeVisitor):
                         end_lineno=getattr(node, "end_lineno", None),
                         severity="CRITICAL",
                         category="insecure-deserialization",
-                        message="yaml.load() without SafeLoader can execute arbitrary Python objects",
+                        message=msg,
                         suggestion="Use yaml.safe_load() or yaml.load(data, Loader=yaml.SafeLoader)",
                         code_snippet=self._get_snippet(node.lineno),
                     )
@@ -494,6 +539,52 @@ class _DangerousCallDetector(ast.NodeVisitor):
             )
 
 
+_FALLBACK_DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str, str, str, str]] = [
+    (
+        re.compile(r"\beval\s*\("),
+        "CRITICAL",
+        "dangerous-eval",
+        "eval() executes arbitrary Python code",
+        "Avoid eval() with untrusted input; use safe alternatives",
+    ),
+    (
+        re.compile(r"\bexec\s*\("),
+        "CRITICAL",
+        "dangerous-exec",
+        "exec() executes arbitrary Python code",
+        "Avoid exec() with untrusted input; use safe alternatives",
+    ),
+    (
+        re.compile(r"\bos\.system\s*\("),
+        "CRITICAL",
+        "shell-injection",
+        "os.system() passes commands through the shell and is vulnerable to injection",
+        "Use subprocess.run() with a list of arguments (no shell=True)",
+    ),
+    (
+        re.compile(r"\b(?:pickle|cPickle)\.(?:loads?)\s*\("),
+        "CRITICAL",
+        "insecure-deserialization",
+        "pickle.loads() deserializes arbitrary objects and can execute arbitrary code",
+        "Use json.loads() or a restricted deserializer instead",
+    ),
+    (
+        re.compile(r"\byaml\.unsafe_load\s*\("),
+        "CRITICAL",
+        "insecure-deserialization",
+        "yaml.unsafe_load() can execute arbitrary Python objects",
+        "Use yaml.safe_load() instead",
+    ),
+    (
+        re.compile(r"\byaml\.load\s*\("),
+        "CRITICAL",
+        "insecure-deserialization",
+        "yaml.load() without SafeLoader can execute arbitrary Python objects",
+        "Use yaml.safe_load() or yaml.load(data, Loader=yaml.SafeLoader)",
+    ),
+]
+
+
 class SecurityScanner:
     """Scans Python source code for security vulnerabilities."""
 
@@ -526,6 +617,7 @@ class SecurityScanner:
         except SyntaxError:
             # Code with syntax errors cannot be AST-parsed; regex checks still run
             logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
+            findings.extend(self._detect_dangerous_calls_fallback(source, filename))
 
         findings.extend(self._detect_secrets(source, filename))
 
@@ -536,26 +628,59 @@ class SecurityScanner:
 
         return SecurityReport(findings=filtered, files_scanned=1)
 
+    def _detect_dangerous_calls_fallback(
+        self, source: str, filename: str
+    ) -> list[SecurityFinding]:
+        """Regex-based fallback for dangerous calls when AST cannot be parsed."""
+        findings: list[SecurityFinding] = []
+        for i, line in enumerate(source.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "#" in line:
+                comment = line.split("#", 1)[1].strip().lower()
+                if (
+                    "nosec" in comment
+                    or "noqa" in comment
+                    or "pycleaner: ignore" in comment
+                ):
+                    continue
+
+            for pat, sev, cat, msg, sugg in _FALLBACK_DANGEROUS_PATTERNS:
+                if pat.search(line):
+                    if cat == "insecure-deserialization" and "yaml.load" in pat.pattern:
+                        if "SafeLoader" in line or "BaseLoader" in line:
+                            continue
+                    findings.append(
+                        SecurityFinding(
+                            filepath=filename,
+                            lineno=i,
+                            end_lineno=i,
+                            severity=sev,
+                            category=cat,
+                            message=msg,
+                            suggestion=sugg,
+                            code_snippet=stripped[:120],
+                        )
+                    )
+        return findings
+
     def _discover_project_py_files(
         self, root: Path, exclude_patterns: Sequence[str] = ()
     ) -> list[Path]:
         return collect_project_python_files(root, exclude_patterns=exclude_patterns)
 
-    def scan_project(
-        self, root_dir: Path | str, exclude_patterns: Sequence[str] = ()
-    ) -> SecurityReport:
-        """Scan all Python files in a project for security issues."""
-        root = Path(root_dir).resolve()
-        py_files = self._discover_project_py_files(
-            root, exclude_patterns=exclude_patterns
-        )
+    def scan_files(self, target_files: Sequence[Path]) -> SecurityReport:
+        """Scan a specific sequence of Python files for security issues."""
         all_findings: list[SecurityFinding] = []
+        scanned_count = 0
 
-        for fpath in py_files:
+        for fpath in target_files:
             try:
                 content = fpath.read_text(encoding="utf-8", errors="replace")
                 report = self.scan_source(content, filename=str(fpath))
                 all_findings.extend(report.findings)
+                scanned_count += 1
             except OSError:
                 continue
 
@@ -566,7 +691,17 @@ class SecurityScanner:
                 f.lineno,
             )
         )
-        return SecurityReport(findings=all_findings, files_scanned=len(py_files))
+        return SecurityReport(findings=all_findings, files_scanned=scanned_count)
+
+    def scan_project(
+        self, root_dir: Path | str, exclude_patterns: Sequence[str] = ()
+    ) -> SecurityReport:
+        """Scan all Python files in a project for security issues."""
+        root = Path(root_dir).resolve()
+        py_files = self._discover_project_py_files(
+            root, exclude_patterns=exclude_patterns
+        )
+        return self.scan_files(py_files)
 
     @staticmethod
     def _is_test_placeholder_line(filename: str, line_lower: str) -> bool:
