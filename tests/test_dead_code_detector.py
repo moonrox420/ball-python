@@ -135,6 +135,28 @@ class TestDeadCodeDetector(unittest.TestCase):
             dead_names = [item.name for item in report.items if item.kind == "function"]
             self.assertNotIn("shared_tool", dead_names)
 
+    def test_unused_local_variable_detection(self) -> None:
+        code = (
+            "def compute(a, b):\n"
+            "    unused_res = a * b\n"
+            "    return a + b\n"
+        )
+        report = self.detector.scan_source(code, filename="compute.py")
+        vars_found = [item.name for item in report.items if item.kind == "variable"]
+        self.assertIn("unused_res", vars_found)
+
+    def test_scan_source_with_syntax_healing(self) -> None:
+        # Code with missing colon that is healable
+        code = (
+            "def broken(x)\n"
+            "    dead_val = 123\n"
+            "    return x\n"
+        )
+        report = self.detector.scan_source(code, filename="broken.py")
+        vars_found = [item.name for item in report.items if item.kind == "variable"]
+        self.assertIn("dead_val", vars_found)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -55,9 +55,11 @@ class FrameworkRegistry:
 
     def __init__(self) -> None:
         self._plugins: list[FrameworkPlugin] = []
+        self._applicable_cache: dict[tuple[int, str], list[FrameworkPlugin]] = {}
 
     def register(self, plugin: FrameworkPlugin) -> None:
         self._plugins.append(plugin)
+        self._applicable_cache.clear()
 
     @property
     def plugins(self) -> list[FrameworkPlugin]:
@@ -66,7 +68,12 @@ class FrameworkRegistry:
     def get_applicable_plugins(
         self, tree: ast.AST, filepath: Path | str
     ) -> list[FrameworkPlugin]:
-        return [p for p in self._plugins if p.is_applicable(tree, filepath)]
+        cache_key = (id(tree), str(filepath))
+        if cache_key in self._applicable_cache:
+            return self._applicable_cache[cache_key]
+        applicable = [p for p in self._plugins if p.is_applicable(tree, filepath)]
+        self._applicable_cache[cache_key] = applicable
+        return applicable
 
     def is_protected(
         self,

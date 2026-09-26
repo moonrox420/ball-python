@@ -155,7 +155,9 @@ class _DefinitionCollector(ast.NodeVisitor):
                 return
 
         # Module-level constants or class attributes (not local function variables)
-        if not self._scope_stack or len(self._scope_stack) == 1:
+        if not self._scope_stack or (
+            self._class_stack and len(self._scope_stack) == len(self._class_stack)
+        ):
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     name = target.id
@@ -184,9 +186,12 @@ class _DefinitionCollector(ast.NodeVisitor):
                 self.generic_visit(node)
                 return
 
-        if (not self._scope_stack or len(self._scope_stack) == 1) and isinstance(
-            node.target, ast.Name
-        ):
+        if (
+            not self._scope_stack
+            or (
+                self._class_stack and len(self._scope_stack) == len(self._class_stack)
+            )
+        ) and isinstance(node.target, ast.Name):
             name = node.target.id
             if not name.startswith("__"):
                 context = (
@@ -573,9 +578,23 @@ class _ProjectScanState:
     def process_file(self, py_file: Path) -> None:
         try:
             content = py_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+
+        try:
             tree = ast.parse(content, filename=str(py_file))
         except SyntaxError:
-            return
+            from pycleaner.syntax_healer import SyntaxHealer
+
+            heal_res = SyntaxHealer().heal(content, filename=str(py_file))
+            if heal_res.is_valid:
+                try:
+                    tree = ast.parse(heal_res.code, filename=str(py_file))
+                    content = heal_res.code
+                except SyntaxError:
+                    return
+            else:
+                return
 
         filepath_str = str(py_file)
         def_collector = _DefinitionCollector(
@@ -762,17 +781,28 @@ class DeadCodeDetector:
         return self.scan_files(py_files)
 
     def scan_source(self, source: str, filename: str = "<unknown>") -> DeadCodeReport:
-        """Scan a single source string for dead code patterns (unreachable/empty only)."""
+        """Scan a single source string for dead code patterns (unreachable, empty branches, and local dead variables)."""
         try:
             tree = ast.parse(source, filename=filename)
         except SyntaxError:
-            return DeadCodeReport()
+            from pycleaner.syntax_healer import SyntaxHealer
+
+            heal_res = SyntaxHealer().heal(source, filename=filename)
+            if heal_res.is_valid:
+                try:
+                    tree = ast.parse(heal_res.code, filename=filename)
+                except SyntaxError:
+                    return DeadCodeReport()
+            else:
+                return DeadCodeReport()
 
         unreachable = _UnreachableCodeDetector(filename, source.splitlines())
         unreachable.visit(tree)
 
+        items = list(unreachable.items)
+        items.sort(key=lambda x: (x.filepath, x.lineno))
         return DeadCodeReport(
-            items=unreachable.items,
+            items=items,
             files_scanned=1,
             total_definitions=0,
         )

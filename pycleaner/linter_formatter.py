@@ -57,6 +57,25 @@ class _UsageCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _find_executable(name: str) -> str | None:
+    """Find CLI tool executable in PATH, virtual environment Scripts/bin, or python directory."""
+    found = shutil.which(name)
+    if found:
+        return found
+    from pathlib import Path
+    scripts_dir = Path(sys.prefix) / ("Scripts" if sys.platform == "win32" else "bin")
+    for ext in (".exe", ""):
+        candidate = scripts_dir / f"{name}{ext}"
+        if candidate.is_file():
+            return str(candidate)
+    parent_dir = Path(sys.executable).parent
+    for ext in (".exe", ""):
+        candidate = parent_dir / f"{name}{ext}"
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 class LinterFormatter:
     """Orchestrates static lint autofixes and canonical formatting."""
 
@@ -72,10 +91,10 @@ class LinterFormatter:
     DEFAULT_SELECT_RULES = "F401,F841,I,UP,E,W,B,SIM,RUF"
 
     def __init__(self, ruff_path: str | None = None) -> None:
-        self.ruff_cmd: str | None = ruff_path or shutil.which("ruff")
-        self.autoflake_cmd: str | None = shutil.which("autoflake")
-        self.black_cmd: str | None = shutil.which("black")
-        self.isort_cmd: str | None = shutil.which("isort")
+        self.ruff_cmd: str | None = ruff_path or _find_executable("ruff")
+        self.autoflake_cmd: str | None = _find_executable("autoflake")
+        self.black_cmd: str | None = _find_executable("black")
+        self.isort_cmd: str | None = _find_executable("isort")
 
     def fix_and_format(
         self,

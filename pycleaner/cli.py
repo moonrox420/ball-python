@@ -901,7 +901,9 @@ def _run_progress_fix(
         backup=opts.backup,
         in_progress=True,
     )
-    _print_msg, console, _is_json = io_ctx
+    print_msg, console, is_json = io_ctx
+    modified_items: list[tuple[CleanResult, Path]] = []
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -916,7 +918,17 @@ def _run_progress_fix(
                 py_file, apply_changes=opts.apply_changes, backup=opts.backup
             )
             _accumulate_result(result, py_file, state, prog_opts, io_ctx)
+            if result.changed or result.error or result.syntax_repairs:
+                modified_items.append((result, py_file))
             progress.advance(task)
+
+    if not is_json and modified_items:
+        print_msg("")
+        for res, py_file in modified_items:
+            if not res.error and res.changed:
+                _report_file_modifications(res, py_file, opts.apply_changes, print_msg)
+                if opts.show_diff and res.diff:
+                    _render_fix_diff(res.diff, console)
 
 
 def _execute_fix_batch(
@@ -2271,6 +2283,7 @@ def _cmd_watch(
     except KeyboardInterrupt:
         print_msg("\n[bold]Watch mode stopped.[/bold]")
         return 0
+    return 0
 
 
 def _cmd_hook(args: argparse.Namespace, print_msg) -> int:
